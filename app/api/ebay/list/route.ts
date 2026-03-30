@@ -115,6 +115,144 @@ export async function POST(req: Request) {
       return { ensured: hasBestOfferEnabled(afterFix), attempted: true }
     }
 
+    const recreateOfferWithBestOffer = async (
+      baseUrl: string,
+      accessToken: string,
+      existingOfferId: string,
+      offerPayload: any
+    ) => {
+      console.warn("[LIST API DEBUG] Starting strong Best Offer fallback (recreate offer)", {
+        existingOfferId,
+      })
+
+      // Best effort: withdraw existing published offer before deletion.
+      try {
+        const withdrawUrl = `${baseUrl}/sell/inventory/v1/offer/${existingOfferId}/withdraw`
+        const withdrawResponse = await fetch(withdrawUrl, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+            "Content-Language": "en-US",
+            "Accept-Language": "en-US",
+            "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+          },
+          body: JSON.stringify({ reason: "OTHER" }),
+        })
+        if (!withdrawResponse.ok) {
+          const withdrawError = await withdrawResponse.json().catch(() => ({}))
+          console.warn("[LIST API DEBUG] Withdraw existing offer failed (continuing):", {
+            existingOfferId,
+            status: withdrawResponse.status,
+            statusText: withdrawResponse.statusText,
+            withdrawError,
+          })
+        } else {
+          console.log("[LIST API DEBUG] Existing offer withdrawn before recreate:", {
+            existingOfferId,
+          })
+        }
+      } catch (withdrawError) {
+        console.warn("[LIST API DEBUG] Withdraw existing offer exception (continuing):", {
+          existingOfferId,
+          error: withdrawError instanceof Error ? withdrawError.message : String(withdrawError),
+        })
+      }
+
+      const deleteUrl = `${baseUrl}/sell/inventory/v1/offer/${existingOfferId}`
+      const deleteResponse = await fetch(deleteUrl, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "Content-Language": "en-US",
+          "Accept-Language": "en-US",
+          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+        },
+      })
+
+      if (!deleteResponse.ok) {
+        const deleteError = await deleteResponse.json().catch(() => ({}))
+        console.warn("[LIST API DEBUG] Delete existing offer failed:", {
+          existingOfferId,
+          status: deleteResponse.status,
+          statusText: deleteResponse.statusText,
+          deleteError,
+        })
+        return { recreated: false, ensured: false }
+      }
+
+      console.log("[LIST API DEBUG] Existing offer deleted successfully:", { existingOfferId })
+
+      const createUrl = `${baseUrl}/sell/inventory/v1/offer`
+      const createResponse = await fetch(createUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "Content-Language": "en-US",
+          "Accept-Language": "en-US",
+          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+        },
+        body: JSON.stringify(offerPayload),
+      })
+
+      if (!createResponse.ok) {
+        const createError = await createResponse.json().catch(() => ({}))
+        console.warn("[LIST API DEBUG] Recreate offer POST failed:", {
+          status: createResponse.status,
+          statusText: createResponse.statusText,
+          createError,
+        })
+        return { recreated: false, ensured: false }
+      }
+
+      const createdOfferData = await createResponse.json().catch(() => ({}))
+      const recreatedOfferId = createdOfferData?.offerId
+      if (!recreatedOfferId) {
+        console.warn("[LIST API DEBUG] Recreate offer succeeded but offerId missing")
+        return { recreated: false, ensured: false }
+      }
+
+      const publishUrl = `${baseUrl}/sell/inventory/v1/offer/${recreatedOfferId}/publish`
+      const publishResponse = await fetch(publishUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "Content-Language": "en-US",
+          "Accept-Language": "en-US",
+          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+        },
+      })
+
+      if (!publishResponse.ok) {
+        const publishError = await publishResponse.json().catch(() => ({}))
+        console.warn("[LIST API DEBUG] Recreated offer publish failed:", {
+          recreatedOfferId,
+          status: publishResponse.status,
+          statusText: publishResponse.statusText,
+          publishError,
+        })
+        return { recreated: true, ensured: false, recreatedOfferId }
+      }
+
+      const recreatedPublishData = await publishResponse.json().catch(() => ({}))
+      const recreatedState = await logOfferState(
+        baseUrl,
+        accessToken,
+        recreatedOfferId,
+        "BEST_OFFER_RECREATE_AFTER_PUBLISH"
+      )
+
+      return {
+        recreated: true,
+        ensured: hasBestOfferEnabled(recreatedState),
+        recreatedOfferId,
+        recreatedListingId: recreatedPublishData?.listingId,
+      }
+    }
+
     // Check if user is authenticated
     const session = await auth()
     
@@ -1371,6 +1509,9 @@ export async function POST(req: Request) {
             await logOfferState(baseUrl, accessToken, offerId, "AFTER_EXISTING_OFFER_PUBLISH")
 
             let bestOfferFixResult: { ensured: boolean; attempted: boolean } | null = null
+            let bestOfferRecreateResult:
+              | { recreated: boolean; ensured: boolean; recreatedOfferId?: string; recreatedListingId?: string }
+              | null = null
             if (allowOffers) {
               bestOfferFixResult = await tryEnsureBestOfferTerms(
                 baseUrl,
@@ -1378,6 +1519,15 @@ export async function POST(req: Request) {
                 offerId,
                 offerPayload
               )
+
+              if (!bestOfferFixResult.ensured) {
+                bestOfferRecreateResult = await recreateOfferWithBestOffer(
+                  baseUrl,
+                  accessToken,
+                  offerId,
+                  offerPayload
+                )
+              }
             }
             
             // Update SKU counter after successful listing
@@ -1397,20 +1547,24 @@ export async function POST(req: Request) {
             return NextResponse.json({
               success: true,
               message: "Product listing updated and published successfully on eBay",
-              listingId: publishData.listingId,
-              offerId: offerId,
+              listingId: bestOfferRecreateResult?.recreatedListingId || publishData.listingId,
+              offerId: bestOfferRecreateResult?.recreatedOfferId || offerId,
               sku: finalSku,
-              listingUrl: `https://www.ebay.com/itm/${publishData.listingId}`,
+              listingUrl: `https://www.ebay.com/itm/${bestOfferRecreateResult?.recreatedListingId || publishData.listingId}`,
               updated: true, // Flag to indicate this was an update, not new listing
               bestOfferEnabledRequested: allowOffers,
               bestOfferEnsured:
-                allowOffers && bestOfferFixResult
-                  ? bestOfferFixResult.ensured
+                allowOffers && (bestOfferRecreateResult || bestOfferFixResult)
+                  ? !!(bestOfferRecreateResult?.ensured || bestOfferFixResult?.ensured)
                   : undefined,
               bestOfferRetryAttempted:
                 allowOffers && bestOfferFixResult
                   ? bestOfferFixResult.attempted
                   : undefined,
+              bestOfferRecreateAttempted:
+                allowOffers && bestOfferFixResult && !bestOfferFixResult.ensured
+                  ? true
+                  : false,
             })
           } else {
             const updateErrorData = await updateResponse.json().catch(() => ({}))
