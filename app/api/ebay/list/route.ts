@@ -32,7 +32,7 @@ export async function POST(req: Request) {
             statusText: offerDetailsResponse.statusText,
             detailsError,
           })
-          return
+          return null
         }
 
         const offerDetails = await offerDetailsResponse.json()
@@ -44,6 +44,7 @@ export async function POST(req: Request) {
           categoryId: offerDetails?.categoryId || null,
           listingPolicies: offerDetails?.listingPolicies || null,
         })
+        return offerDetails
       } catch (offerStateError) {
         console.warn(`[LIST API DEBUG] Offer state check exception (${label}):`, {
           offerId,
@@ -52,7 +53,66 @@ export async function POST(req: Request) {
               ? offerStateError.message
               : String(offerStateError),
         })
+        return null
       }
+    }
+
+    const hasBestOfferEnabled = (offerDetails: any): boolean => {
+      return !!offerDetails?.bestOfferTerms?.bestOfferEnabled
+    }
+
+    const tryEnsureBestOfferTerms = async (
+      baseUrl: string,
+      accessToken: string,
+      offerId: string,
+      offerPayload: any
+    ) => {
+      const beforeFix = await logOfferState(
+        baseUrl,
+        accessToken,
+        offerId,
+        "BEST_OFFER_ENSURE_BEFORE_RETRY"
+      )
+
+      if (hasBestOfferEnabled(beforeFix)) {
+        return { ensured: true, attempted: false }
+      }
+
+      console.warn("[LIST API DEBUG] Best Offer not persisted; retrying offer update", {
+        offerId,
+      })
+
+      const retryUpdateUrl = `${baseUrl}/sell/inventory/v1/offer/${offerId}`
+      const retryUpdateResponse = await fetch(retryUpdateUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+          "Content-Language": "en-US",
+          "Accept-Language": "en-US",
+          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+        },
+        body: JSON.stringify(offerPayload),
+      })
+
+      if (!retryUpdateResponse.ok) {
+        const retryError = await retryUpdateResponse.json().catch(() => ({}))
+        console.warn("[LIST API DEBUG] Best Offer retry update failed:", {
+          offerId,
+          status: retryUpdateResponse.status,
+          statusText: retryUpdateResponse.statusText,
+          retryError,
+        })
+        return { ensured: false, attempted: true }
+      }
+
+      const afterFix = await logOfferState(
+        baseUrl,
+        accessToken,
+        offerId,
+        "BEST_OFFER_ENSURE_AFTER_RETRY"
+      )
+      return { ensured: hasBestOfferEnabled(afterFix), attempted: true }
     }
 
     // Check if user is authenticated
@@ -1309,6 +1369,16 @@ export async function POST(req: Request) {
             
             const publishData = await publishResponse.json()
             await logOfferState(baseUrl, accessToken, offerId, "AFTER_EXISTING_OFFER_PUBLISH")
+
+            let bestOfferFixResult: { ensured: boolean; attempted: boolean } | null = null
+            if (allowOffers) {
+              bestOfferFixResult = await tryEnsureBestOfferTerms(
+                baseUrl,
+                accessToken,
+                offerId,
+                offerPayload
+              )
+            }
             
             // Update SKU counter after successful listing
             if (shouldIncrementCounter) {
@@ -1332,6 +1402,15 @@ export async function POST(req: Request) {
               sku: finalSku,
               listingUrl: `https://www.ebay.com/itm/${publishData.listingId}`,
               updated: true, // Flag to indicate this was an update, not new listing
+              bestOfferEnabledRequested: allowOffers,
+              bestOfferEnsured:
+                allowOffers && bestOfferFixResult
+                  ? bestOfferFixResult.ensured
+                  : undefined,
+              bestOfferRetryAttempted:
+                allowOffers && bestOfferFixResult
+                  ? bestOfferFixResult.attempted
+                  : undefined,
             })
           } else {
             const updateErrorData = await updateResponse.json().catch(() => ({}))
