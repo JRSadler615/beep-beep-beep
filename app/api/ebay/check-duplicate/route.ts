@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { prisma } from "@/lib/prisma"
+import {
+  getEbayBaseUrl,
+  getValidEbayToken,
+  ebayHeaders,
+  debugLog,
+} from "@/lib/ebay"
 
 export async function GET(req: Request) {
   try {
@@ -23,72 +28,21 @@ export async function GET(req: Request) {
       )
     }
 
-    // Get user's eBay access token
-    const ebayToken = await prisma.ebayToken.findUnique({
-      where: { userId: session.user.id }
-    })
-    
-    if (!ebayToken) {
+    // Get a valid eBay access token (refreshes automatically if expired)
+    const tokenResult = await getValidEbayToken(session.user.id)
+    if (!tokenResult.ok) {
       return NextResponse.json(
-        { error: "eBay account not connected" },
-        { status: 400 }
+        {
+          error: tokenResult.error,
+          needsReconnect: tokenResult.needsReconnect,
+          details: tokenResult.details,
+        },
+        { status: tokenResult.status }
       )
     }
+    const accessToken = tokenResult.accessToken
 
-    let accessToken = ebayToken.accessToken
-    
-    // Check if token is expired and refresh if necessary
-    if (new Date() >= ebayToken.expiresAt) {
-      if (!ebayToken.refreshToken) {
-        return NextResponse.json(
-          { error: "eBay token expired" },
-          { status: 401 }
-        )
-      }
-
-      const isSandbox = process.env.EBAY_SANDBOX === "true"
-      const tokenEndpoint = isSandbox
-        ? "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
-        : "https://api.ebay.com/identity/v1/oauth2/token"
-
-      const refreshResponse = await fetch(tokenEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Authorization: `Basic ${Buffer.from(
-            `${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`
-          ).toString("base64")}`,
-        },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: ebayToken.refreshToken,
-        }),
-      })
-
-      if (!refreshResponse.ok) {
-        return NextResponse.json(
-          { error: "Failed to refresh token" },
-          { status: 401 }
-        )
-      }
-
-      const refreshData = await refreshResponse.json()
-      accessToken = refreshData.access_token
-
-      await prisma.ebayToken.update({
-        where: { userId: session.user.id },
-        data: {
-          accessToken: refreshData.access_token,
-          refreshToken: refreshData.refresh_token || ebayToken.refreshToken,
-          expiresAt: new Date(Date.now() + (refreshData.expires_in * 1000)),
-        },
-      })
-    }
-
-    const isSandbox = process.env.EBAY_SANDBOX === "true"
-    const baseUrl = isSandbox
-      ? "https://api.sandbox.ebay.com"
-      : "https://api.ebay.com"
+    const baseUrl = getEbayBaseUrl()
 
     // Normalize UPC for comparison
     const normalizeUPC = (upcValue: string): string => {
@@ -111,13 +65,7 @@ export async function GET(req: Request) {
     const inventoryUrl = `${baseUrl}/sell/inventory/v1/inventory_item?limit=200&offset=0`
     
     const inventoryResponse = await fetch(inventoryUrl, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'Content-Language': 'en-US',
-        'Accept-Language': 'en-US',
-        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-      },
+      headers: ebayHeaders(accessToken),
     })
 
     if (!inventoryResponse.ok) {
@@ -234,13 +182,7 @@ export async function GET(req: Request) {
       }
       
       const nextResponse = await fetch(nextUrl, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'Content-Language': 'en-US',
-          'Accept-Language': 'en-US',
-          'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-        },
+        headers: ebayHeaders(accessToken),
       })
 
       if (!nextResponse.ok) {

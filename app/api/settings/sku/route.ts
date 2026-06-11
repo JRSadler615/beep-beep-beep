@@ -15,13 +15,13 @@ export async function GET() {
     }
 
     // Get or create SKU settings for the user
-    let skuSettings = await (prisma as any).skuSettings.findUnique({
+    let skuSettings = await prisma.skuSettings.findUnique({
       where: { userId: session.user.id }
     })
 
     // If no settings exist, create default ones
     if (!skuSettings) {
-      skuSettings = await (prisma as any).skuSettings.create({
+      skuSettings = await prisma.skuSettings.create({
         data: {
           userId: session.user.id,
           nextSkuCounter: 1,
@@ -72,7 +72,7 @@ export async function POST(req: Request) {
     // Validate skuPrefix if provided (optional, can be null)
     if (skuPrefix !== undefined && skuPrefix !== null && skuPrefix.trim() === "") {
       // Empty string means clear the prefix (use auto-detection)
-      const updated = await (prisma as any).skuSettings.upsert({
+      const updated = await prisma.skuSettings.upsert({
         where: { userId: session.user.id },
         update: {
           ...(nextSkuCounter !== undefined && { nextSkuCounter: parseInt(nextSkuCounter) }),
@@ -93,7 +93,7 @@ export async function POST(req: Request) {
     }
 
     // Update settings
-    const updated = await (prisma as any).skuSettings.upsert({
+    const updated = await prisma.skuSettings.upsert({
       where: { userId: session.user.id },
       update: {
         ...(nextSkuCounter !== undefined && { nextSkuCounter: parseInt(nextSkuCounter) }),

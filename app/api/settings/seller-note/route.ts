@@ -14,13 +14,13 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    let settings = await (prisma as any).sellerNoteSettings.findUnique({
+    let settings = await prisma.sellerNoteSettings.findUnique({
       where: { userId: session.user.id },
     })
 
     // Create default settings if missing
     if (!settings) {
-      settings = await (prisma as any).sellerNoteSettings.create({
+      settings = await prisma.sellerNoteSettings.create({
         data: {
           userId: session.user.id,
           enableSellerNoteEditing: false,
@@ -73,7 +73,7 @@ export async function POST(req: Request) {
         ? (sellerNoteText.trim().length > 0 ? sellerNoteText.trim() : DEFAULT_SELLER_NOTE)
         : undefined
 
-    const updated = await (prisma as any).sellerNoteSettings.upsert({
+    const updated = await prisma.sellerNoteSettings.upsert({
       where: { userId: session.user.id },
       update: {
         ...(enableSellerNoteEditing !== undefined && { enableSellerNoteEditing }),

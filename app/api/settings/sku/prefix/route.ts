@@ -21,7 +21,7 @@ export async function POST(req: Request) {
     const prefixValue = prefix && prefix.trim() !== "" ? prefix.trim() : null
 
     // Update or create SKU settings
-    const updated = await (prisma as any).skuSettings.upsert({
+    const updated = await prisma.skuSettings.upsert({
       where: { userId: session.user.id },
       update: {
         skuPrefix: prefixValue,

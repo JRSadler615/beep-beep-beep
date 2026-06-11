@@ -15,13 +15,13 @@ export async function GET() {
     }
 
     // Get or create edit mode settings for the user
-    let editModeSettings = await (prisma as any).editModeSettings.findUnique({
+    let editModeSettings = await prisma.editModeSettings.findUnique({
       where: { userId: session.user.id }
     })
 
     // If no settings exist, create default ones (defaultEditMode = false)
     if (!editModeSettings) {
-      editModeSettings = await (prisma as any).editModeSettings.create({
+      editModeSettings = await prisma.editModeSettings.create({
         data: {
           userId: session.user.id,
           defaultEditMode: false,
@@ -65,7 +65,7 @@ export async function POST(req: Request) {
     }
 
     // Update or create settings
-    const updated = await (prisma as any).editModeSettings.upsert({
+    const updated = await prisma.editModeSettings.upsert({
       where: { userId: session.user.id },
       update: {
         ...(defaultEditMode !== undefined && { defaultEditMode }),

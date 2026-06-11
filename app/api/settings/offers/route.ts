@@ -12,12 +12,12 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    let offerSettings = await (prisma as any).offerSettings.findUnique({
+    let offerSettings = await prisma.offerSettings.findUnique({
       where: { userId: session.user.id },
     })
 
     if (!offerSettings) {
-      offerSettings = await (prisma as any).offerSettings.create({
+      offerSettings = await prisma.offerSettings.create({
         data: {
           userId: session.user.id,
           allowOffers: false,
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const updated = await (prisma as any).offerSettings.upsert({
+    const updated = await prisma.offerSettings.upsert({
       where: { userId: session.user.id },
       update: {
         ...(allowOffers !== undefined && { allowOffers }),

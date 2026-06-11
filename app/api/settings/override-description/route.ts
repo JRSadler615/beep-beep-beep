@@ -15,13 +15,13 @@ export async function GET() {
     }
 
     // Get or create override description settings for the user
-    let overrideSettings = await (prisma as any).overrideDescriptionSettings.findUnique({
+    let overrideSettings = await prisma.overrideDescriptionSettings.findUnique({
       where: { userId: session.user.id }
     })
 
     // If no settings exist, create default ones
     if (!overrideSettings) {
-      overrideSettings = await (prisma as any).overrideDescriptionSettings.create({
+      overrideSettings = await prisma.overrideDescriptionSettings.create({
         data: {
           userId: session.user.id,
           useOverrideDescription: false,
@@ -75,7 +75,7 @@ export async function POST(req: Request) {
     }
 
     // Update or create settings
-    const updated = await (prisma as any).overrideDescriptionSettings.upsert({
+    const updated = await prisma.overrideDescriptionSettings.upsert({
       where: { userId: session.user.id },
       update: {
         ...(useOverrideDescription !== undefined && { useOverrideDescription }),

@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import {
+  readErrorBody,
+  getEbayBaseUrl,
+  getValidEbayToken,
+  ebayHeaders,
+  debugLog,
+} from "@/lib/ebay"
 
 export async function POST(req: Request) {
-  console.log("[LIST API DEBUG] ========== LISTING REQUEST STARTED ==========")
+  debugLog("[LIST API DEBUG] ========== LISTING REQUEST STARTED ==========")
   try {
     const logOfferState = async (
       baseUrl: string,
@@ -15,17 +22,11 @@ export async function POST(req: Request) {
         const offerDetailsUrl = `${baseUrl}/sell/inventory/v1/offer/${offerId}`
         const offerDetailsResponse = await fetch(offerDetailsUrl, {
           method: "GET",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-            "Content-Language": "en-US",
-            "Accept-Language": "en-US",
-            "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-          },
+          headers: ebayHeaders(accessToken),
         })
 
         if (!offerDetailsResponse.ok) {
-          const detailsError = await offerDetailsResponse.json().catch(() => ({}))
+          const { errorData: detailsError } = await readErrorBody(offerDetailsResponse)
           console.warn(`[LIST API DEBUG] Offer state check failed (${label}):`, {
             offerId,
             status: offerDetailsResponse.status,
@@ -36,7 +37,7 @@ export async function POST(req: Request) {
         }
 
         const offerDetails = await offerDetailsResponse.json()
-        console.log(`[LIST API DEBUG] Offer state check (${label}):`, {
+        debugLog(`[LIST API DEBUG] Offer state check (${label}):`, {
           offerId,
           bestOfferTerms: offerDetails?.bestOfferTerms || null,
           pricingSummary: offerDetails?.pricingSummary || null,
@@ -85,18 +86,12 @@ export async function POST(req: Request) {
       const retryUpdateUrl = `${baseUrl}/sell/inventory/v1/offer/${offerId}`
       const retryUpdateResponse = await fetch(retryUpdateUrl, {
         method: "PUT",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "Content-Language": "en-US",
-          "Accept-Language": "en-US",
-          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-        },
+        headers: ebayHeaders(accessToken),
         body: JSON.stringify(offerPayload),
       })
 
       if (!retryUpdateResponse.ok) {
-        const retryError = await retryUpdateResponse.json().catch(() => ({}))
+        const { errorData: retryError } = await readErrorBody(retryUpdateResponse)
         console.warn("[LIST API DEBUG] Best Offer retry update failed:", {
           offerId,
           status: retryUpdateResponse.status,
@@ -125,54 +120,45 @@ export async function POST(req: Request) {
         existingOfferId,
       })
 
-      // Best effort: withdraw existing published offer before deletion.
+      // Withdraw the existing published offer before deletion. If the
+      // withdraw fails, abort the recreate entirely rather than risk deleting
+      // a live listing we could not cleanly take down.
       try {
         const withdrawUrl = `${baseUrl}/sell/inventory/v1/offer/${existingOfferId}/withdraw`
         const withdrawResponse = await fetch(withdrawUrl, {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-            "Content-Language": "en-US",
-            "Accept-Language": "en-US",
-            "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-          },
+          headers: ebayHeaders(accessToken),
           body: JSON.stringify({ reason: "OTHER" }),
         })
         if (!withdrawResponse.ok) {
-          const withdrawError = await withdrawResponse.json().catch(() => ({}))
-          console.warn("[LIST API DEBUG] Withdraw existing offer failed (continuing):", {
+          const { errorData: withdrawError } = await readErrorBody(withdrawResponse)
+          console.warn("[LIST API DEBUG] Withdraw existing offer failed; aborting recreate:", {
             existingOfferId,
             status: withdrawResponse.status,
             statusText: withdrawResponse.statusText,
             withdrawError,
           })
-        } else {
-          console.log("[LIST API DEBUG] Existing offer withdrawn before recreate:", {
-            existingOfferId,
-          })
+          return { recreated: false, ensured: false }
         }
+        debugLog("[LIST API DEBUG] Existing offer withdrawn before recreate:", {
+          existingOfferId,
+        })
       } catch (withdrawError) {
-        console.warn("[LIST API DEBUG] Withdraw existing offer exception (continuing):", {
+        console.warn("[LIST API DEBUG] Withdraw existing offer exception; aborting recreate:", {
           existingOfferId,
           error: withdrawError instanceof Error ? withdrawError.message : String(withdrawError),
         })
+        return { recreated: false, ensured: false }
       }
 
       const deleteUrl = `${baseUrl}/sell/inventory/v1/offer/${existingOfferId}`
       const deleteResponse = await fetch(deleteUrl, {
         method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "Content-Language": "en-US",
-          "Accept-Language": "en-US",
-          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-        },
+        headers: ebayHeaders(accessToken),
       })
 
       if (!deleteResponse.ok) {
-        const deleteError = await deleteResponse.json().catch(() => ({}))
+        const { errorData: deleteError } = await readErrorBody(deleteResponse)
         console.warn("[LIST API DEBUG] Delete existing offer failed:", {
           existingOfferId,
           status: deleteResponse.status,
@@ -182,23 +168,17 @@ export async function POST(req: Request) {
         return { recreated: false, ensured: false }
       }
 
-      console.log("[LIST API DEBUG] Existing offer deleted successfully:", { existingOfferId })
+      debugLog("[LIST API DEBUG] Existing offer deleted successfully:", { existingOfferId })
 
       const createUrl = `${baseUrl}/sell/inventory/v1/offer`
       const createResponse = await fetch(createUrl, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "Content-Language": "en-US",
-          "Accept-Language": "en-US",
-          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-        },
+        headers: ebayHeaders(accessToken),
         body: JSON.stringify(offerPayload),
       })
 
       if (!createResponse.ok) {
-        const createError = await createResponse.json().catch(() => ({}))
+        const { errorData: createError } = await readErrorBody(createResponse)
         console.warn("[LIST API DEBUG] Recreate offer POST failed:", {
           status: createResponse.status,
           statusText: createResponse.statusText,
@@ -217,17 +197,11 @@ export async function POST(req: Request) {
       const publishUrl = `${baseUrl}/sell/inventory/v1/offer/${recreatedOfferId}/publish`
       const publishResponse = await fetch(publishUrl, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-          "Content-Language": "en-US",
-          "Accept-Language": "en-US",
-          "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-        },
+        headers: ebayHeaders(accessToken),
       })
 
       if (!publishResponse.ok) {
-        const publishError = await publishResponse.json().catch(() => ({}))
+        const { errorData: publishError } = await readErrorBody(publishResponse)
         console.warn("[LIST API DEBUG] Recreated offer publish failed:", {
           recreatedOfferId,
           status: publishResponse.status,
@@ -257,21 +231,21 @@ export async function POST(req: Request) {
     const session = await auth()
     
     if (!session) {
-      console.log("[LIST API DEBUG] ERROR: Unauthorized - no session")
+      debugLog("[LIST API DEBUG] ERROR: Unauthorized - no session")
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
       )
     }
     
-    console.log("[LIST API DEBUG] User authenticated:", session.user.id)
+    debugLog("[LIST API DEBUG] User authenticated:", session.user.id)
 
     let body
     try {
       body = await req.json()
-      console.log("[LIST API DEBUG] Request body parsed successfully")
+      debugLog("[LIST API DEBUG] Request body parsed successfully")
     } catch (parseError) {
-      console.log("[LIST API DEBUG] ERROR: Failed to parse JSON:", parseError)
+      debugLog("[LIST API DEBUG] ERROR: Failed to parse JSON:", parseError)
       return NextResponse.json(
         { error: "Invalid request body. Could not parse JSON." },
         { status: 400 }
@@ -302,8 +276,8 @@ export async function POST(req: Request) {
     } = body
 
     // DEBUG: Log incoming description
-    console.log("[LIST API DEBUG] ========== LISTING REQUEST RECEIVED ==========")
-    console.log("[LIST API DEBUG] Incoming description:", {
+    debugLog("[LIST API DEBUG] ========== LISTING REQUEST RECEIVED ==========")
+    debugLog("[LIST API DEBUG] Incoming description:", {
       description: description,
       descriptionType: typeof description,
       descriptionLength: description ? description.length : 0,
@@ -311,7 +285,7 @@ export async function POST(req: Request) {
       shortDescription: shortDescription,
       descriptionPreview: description ? description.substring(0, 100) : "null/undefined"
     })
-    console.log("[LIST API DEBUG] Incoming conditionDescription:", {
+    debugLog("[LIST API DEBUG] Incoming conditionDescription:", {
       conditionDescriptionType: typeof conditionDescription,
       hasConditionDescription: conditionDescription !== undefined,
       conditionDescriptionLength: typeof conditionDescription === "string" ? conditionDescription.length : 0,
@@ -332,7 +306,7 @@ export async function POST(req: Request) {
     }
     
     // Description - provide default if empty (but preserve empty string if explicitly sent)
-    console.log("[LIST API DEBUG] Processing description - before:", {
+    debugLog("[LIST API DEBUG] Processing description - before:", {
       description: description,
       isEmpty: !description || (typeof description === 'string' && description.trim().length === 0),
       isExplicitlyEmpty: description === ""
@@ -342,15 +316,15 @@ export async function POST(req: Request) {
     // This allows override description to be intentionally empty
     if (description === null || description === undefined) {
       description = "No description provided." // Provide a default description
-      console.log("[LIST API DEBUG] Description was null/undefined, set to default:", description)
+      debugLog("[LIST API DEBUG] Description was null/undefined, set to default:", description)
     } else if (typeof description === 'string' && description.trim().length === 0) {
       // If it's an empty string, check if we should use default or keep it empty
       // For now, we'll use default to ensure eBay listings have descriptions
       description = "No description provided."
-      console.log("[LIST API DEBUG] Description was empty string, set to default:", description)
+      debugLog("[LIST API DEBUG] Description was empty string, set to default:", description)
     } else {
       description = description.trim()
-      console.log("[LIST API DEBUG] Description trimmed:", {
+      debugLog("[LIST API DEBUG] Description trimmed:", {
         originalLength: body.description?.length,
         trimmedLength: description.length,
         preview: description.substring(0, 100)
@@ -361,9 +335,12 @@ export async function POST(req: Request) {
     const defaultSellerNote =
       "Please note: any mention of a digital copy or code may be expired and/or unavailable. This does not affect the quality or functionality of the DVD."
 
-    const sellerNoteSettings = await (prisma as any).sellerNoteSettings.findUnique({
-      where: { userId: session.user.id },
-    })
+    // Load user settings in parallel - these reads are independent
+    const [sellerNoteSettings, offerSettings, savedPolicies] = await Promise.all([
+      prisma.sellerNoteSettings.findUnique({ where: { userId: session.user.id } }),
+      prisma.offerSettings.findUnique({ where: { userId: session.user.id } }),
+      prisma.ebayBusinessPolicies.findUnique({ where: { userId: session.user.id } }),
+    ])
 
     let sellerNote = defaultSellerNote
     let sellerNoteSource = "DEFAULT_HARDCODED"
@@ -383,7 +360,7 @@ export async function POST(req: Request) {
       sellerNote = trimmed.length > 0 ? trimmed : defaultSellerNote
       sellerNoteSource = trimmed.length > 0 ? "REQUEST_CONDITION_DESCRIPTION" : "DEFAULT_HARDCODED_EMPTY_REQUEST"
     }
-    console.log("[LIST API DEBUG] Final Seller Note Decision:", {
+    debugLog("[LIST API DEBUG] Final Seller Note Decision:", {
       sellerNoteSource,
       sellerNoteLength: sellerNote.length,
       sellerNotePreview: sellerNote.substring(0, 120),
@@ -410,8 +387,8 @@ export async function POST(req: Request) {
     }
 
     if (missingFields.length > 0) {
-      console.log("[LIST API DEBUG] ERROR: Missing required fields:", missingFields)
-      console.log("[LIST API DEBUG] Received data:", {
+      debugLog("[LIST API DEBUG] ERROR: Missing required fields:", missingFields)
+      debugLog("[LIST API DEBUG] Received data:", {
         title: title || null,
         description: description || null,
         descriptionLength: description ? description.length : 0,
@@ -434,181 +411,49 @@ export async function POST(req: Request) {
       )
     }
 
-    // Get user's eBay access token from database
-    const ebayToken = await prisma.ebayToken.findUnique({
-      where: { userId: session.user.id }
-    })
-    
-    if (!ebayToken) {
+    // Get a valid eBay access token (refreshes automatically if expired)
+    const tokenResult = await getValidEbayToken(session.user.id)
+    if (!tokenResult.ok) {
       return NextResponse.json(
-        { error: "eBay account not connected. Please connect your eBay account first." },
-        { status: 400 }
+        {
+          error: tokenResult.error,
+          needsReconnect: tokenResult.needsReconnect,
+          details: tokenResult.details,
+        },
+        { status: tokenResult.status }
       )
     }
+    const accessToken = tokenResult.accessToken
 
-    // Check if token is expired and refresh if necessary
-    let accessToken = ebayToken.accessToken
-    
-    // Log access token for testing/debugging
-    const isSandbox = process.env.EBAY_SANDBOX === "true"
-    console.log("=".repeat(80))
-    console.log("eBay ACCESS TOKEN FOR POSTMAN TESTING:")
-    console.log("Environment:", isSandbox ? "SANDBOX" : "PRODUCTION")
-    console.log("Access Token:", accessToken)
-    console.log("Token Expires At:", ebayToken.expiresAt)
-    console.log("Token Status:", new Date() >= ebayToken.expiresAt ? "EXPIRED (will refresh)" : "VALID")
-    console.log("=".repeat(80))
-    
-    if (new Date() >= ebayToken.expiresAt) {
-      // Token is expired, try to refresh
-      if (!ebayToken.refreshToken) {
-        return NextResponse.json(
-          { error: "eBay token expired. Please reconnect your eBay account." },
-          { status: 401 }
-        )
-      }
+    const baseUrl = getEbayBaseUrl()
 
-      // Refresh the token
-      const isSandbox = process.env.EBAY_SANDBOX === "true"
-      const tokenEndpoint = isSandbox
-        ? "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
-        : "https://api.ebay.com/identity/v1/oauth2/token"
-
-      const refreshResponse = await fetch(tokenEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Authorization: `Basic ${Buffer.from(
-            `${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`
-          ).toString("base64")}`,
-        },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: ebayToken.refreshToken,
-        }),
-      })
-
-      if (!refreshResponse.ok) {
-        const refreshErrorData = await refreshResponse.json().catch(() => ({}))
-        console.error("Token refresh failed:", refreshErrorData)
-        
-        // Only delete token if refresh fails with 400/401 (invalid/expired refresh token)
-        // Don't delete for other errors (network issues, etc.)
-        if (refreshResponse.status === 400 || refreshResponse.status === 401) {
-          try {
-            await prisma.ebayToken.delete({
-              where: { userId: session.user.id }
-            })
-            console.log("Token deleted after failed refresh")
-          } catch (deleteError) {
-            console.error("Failed to delete token after refresh failure:", deleteError)
-          }
-          return NextResponse.json(
-            { 
-              error: "Failed to refresh eBay token. Please reconnect your eBay account.",
-              needsReconnect: true
-            },
-            { status: 401 }
-          )
-        }
-        
-        // For other errors, don't delete token - just return error
-        return NextResponse.json(
-          { 
-            error: "Failed to refresh eBay token. Please try again.",
-            details: refreshErrorData
-          },
-          { status: refreshResponse.status }
-        )
-      }
-
-      const refreshData = await refreshResponse.json()
-      accessToken = refreshData.access_token
-      
-      // Log new access token after refresh
-      console.log("=".repeat(80))
-      console.log("eBay TOKEN REFRESHED - NEW ACCESS TOKEN:")
-      console.log("New Access Token:", accessToken)
-      console.log("New Expires At:", new Date(Date.now() + (refreshData.expires_in * 1000)))
-      console.log("=".repeat(80))
-
-      // Update token in database
-      await prisma.ebayToken.update({
-        where: { userId: session.user.id },
-        data: {
-          accessToken: refreshData.access_token,
-          refreshToken: refreshData.refresh_token || ebayToken.refreshToken,
-          expiresAt: new Date(Date.now() + (refreshData.expires_in * 1000)),
-        },
-      })
-    }
-
-    const isSandboxEnv = process.env.EBAY_SANDBOX === "true"
-    const baseUrl = isSandboxEnv
-      ? "https://api.sandbox.ebay.com"
-      : "https://api.ebay.com"
-    
-    // Log API details for Postman testing
-    console.log("=".repeat(80))
-    console.log("eBay API DETAILS FOR POSTMAN:")
-    console.log("Base URL:", baseUrl)
-    console.log("Marketplace:", "EBAY_US")
-    console.log("Current Access Token:", accessToken)
-    console.log("=".repeat(80))
-
-    // Get or create SKU settings for the user
-    let skuSettings: { nextSkuCounter: number; skuPrefix: string | null } = {
-      nextSkuCounter: 1,
-      skuPrefix: null,
-    }
-    let shouldIncrementCounter = false
-    
+    // Atomically claim the next SKU counter value. The upsert increments the
+    // stored counter in a single statement, so concurrent listing requests can
+    // never claim the same counter (the old read-then-increment-after-success
+    // flow could). A failed listing leaves a gap in the sequence, which is
+    // harmless.
+    let prefix = "SKU"
+    let counter = 1
     try {
-      const existingSettings = await (prisma as any).skuSettings.findUnique({
-        where: { userId: session.user.id }
+      const claimedSettings = await prisma.skuSettings.upsert({
+        where: { userId: session.user.id },
+        create: { userId: session.user.id, nextSkuCounter: 2, skuPrefix: null },
+        update: { nextSkuCounter: { increment: 1 } },
       })
-
-      if (existingSettings) {
-        skuSettings = {
-          nextSkuCounter: existingSettings.nextSkuCounter,
-          skuPrefix: existingSettings.skuPrefix,
-        }
-        shouldIncrementCounter = true
-      } else {
-        // If no settings exist, create default ones
-        try {
-          const newSettings = await (prisma as any).skuSettings.create({
-            data: {
-              userId: session.user.id,
-              nextSkuCounter: 1,
-              skuPrefix: null,
-            }
-          })
-          skuSettings = {
-            nextSkuCounter: newSettings.nextSkuCounter,
-            skuPrefix: newSettings.skuPrefix,
-          }
-          shouldIncrementCounter = true
-        } catch (createError) {
-          // If create fails, use defaults
-          console.warn("Could not create SKU settings, using defaults:", createError)
-        }
-      }
+      // upsert returns the post-increment value (or 2 on first creation), so
+      // the counter this request claimed is one less.
+      counter = claimedSettings.nextSkuCounter - 1
+      prefix = claimedSettings.skuPrefix || "SKU"
     } catch (error) {
-      // Fallback if Prisma Client types aren't updated yet
       console.warn("SKU settings not available, using default:", error)
     }
 
     // Generate SKU using user's settings: {Prefix}-0000{counter}
     // Client requirement: "0000" (4 zeros) is literally prepended to the counter
     // Format: DVD-00001, DVD-000010, DVD-0000100, etc.
-    const prefix = skuSettings.skuPrefix || "SKU"
-    const counter = skuSettings.nextSkuCounter
     const sku = `${prefix}-0000${counter}`
-    
-    console.log("Generated SKU:", sku, `(Counter: ${counter}, Format: ${prefix}-0000X)`)
-    
-    // Increment the counter for next time (we'll update it after successful listing)
+
+    debugLog("Generated SKU:", sku, `(Counter: ${counter}, Format: ${prefix}-0000X)`)
 
     // Step 1: Create an inventory item
     // Build product object - eBay requires at minimum a title
@@ -619,11 +464,11 @@ export async function POST(req: Request) {
     // Add eBay Product ID (ePID) for better catalog matching - highest priority
     if (epid && epid.trim().length > 0) {
       productObj.epid = epid.trim()
-      console.log("Using eBay Product ID (ePID) for catalog matching:", epid)
+      debugLog("Using eBay Product ID (ePID) for catalog matching:", epid)
     }
     
     // Add description if provided
-    console.log("[LIST API DEBUG] Adding description to productObj:", {
+    debugLog("[LIST API DEBUG] Adding description to productObj:", {
       hasDescription: !!(description && description.trim().length > 0),
       descriptionValue: description,
       isNoDescription: description === "No description",
@@ -631,12 +476,12 @@ export async function POST(req: Request) {
     })
     if (description && description.trim().length > 0 && description !== "No description") {
       productObj.description = description.substring(0, 50000)
-      console.log("[LIST API DEBUG] Added description to productObj:", {
+      debugLog("[LIST API DEBUG] Added description to productObj:", {
         length: productObj.description.length,
         preview: productObj.description.substring(0, 100)
       })
     } else {
-      console.log("[LIST API DEBUG] NOT adding description to productObj (empty or 'No description')")
+      debugLog("[LIST API DEBUG] NOT adding description to productObj (empty or 'No description')")
     }
     
     // Add images if provided - eBay expects imageUrls array
@@ -655,7 +500,7 @@ export async function POST(req: Request) {
     }
     if (allImages.length > 0) {
       productObj.imageUrls = allImages.slice(0, 12) // eBay allows up to 12 images
-      console.log(`Added ${allImages.length} images to product (max 12)`)
+      debugLog(`Added ${allImages.length} images to product (max 12)`)
     }
     
     // Add product identifiers (UPC, EAN, ISBN, etc.) if provided
@@ -705,24 +550,24 @@ export async function POST(req: Request) {
       // Ensure Brand is included (required for most categories)
       if (!formattedAspects.Brand && brand && brand.trim().length > 0) {
         formattedAspects.Brand = [brand.trim()]
-        console.log("Added Brand to aspects from product data")
+        debugLog("Added Brand to aspects from product data")
       }
       
       // Ensure MPN is included if available (required for some categories)
       if (!formattedAspects.MPN && !formattedAspects["Manufacturer Part Number"] && mpn && mpn.trim().length > 0) {
         formattedAspects.MPN = [mpn.trim()]
-        console.log("Added MPN to aspects from product data")
+        debugLog("Added MPN to aspects from product data")
       }
       
       productObj.aspects = formattedAspects
-      console.log("Product aspects included:", Object.keys(formattedAspects).join(", "))
+      debugLog("Product aspects included:", Object.keys(formattedAspects).join(", "))
     } else if (brand && brand.trim().length > 0) {
       // If no aspects provided but we have brand, include it
       formattedAspects = {
         Brand: [brand.trim()]
       }
       productObj.aspects = formattedAspects
-      console.log("Created aspects with Brand from product data")
+      debugLog("Created aspects with Brand from product data")
     }
     
     // Determine final category ID before validation
@@ -731,7 +576,7 @@ export async function POST(req: Request) {
       const primaryCategory = categories[0]
       if (primaryCategory && primaryCategory.categoryId) {
         finalCategoryId = primaryCategory.categoryId
-        console.log("Using category from Browse API:", primaryCategory.categoryName || primaryCategory.categoryId)
+        debugLog("Using category from Browse API:", primaryCategory.categoryName || primaryCategory.categoryId)
       }
     }
     if (!finalCategoryId || finalCategoryId === "") {
@@ -743,11 +588,7 @@ export async function POST(req: Request) {
     try {
       const validationUrl = `${baseUrl}/sell/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${finalCategoryId}`
       const validationResponse = await fetch(validationUrl, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-        },
+        headers: ebayHeaders(accessToken),
       })
       
       if (validationResponse.ok) {
@@ -770,7 +611,7 @@ export async function POST(req: Request) {
           })
         }
         
-        console.log("Validating required aspects:", {
+        debugLog("Validating required aspects:", {
           requiredAspects,
           currentAspectKeys: formattedAspects ? Object.keys(formattedAspects) : [],
           formattedAspects
@@ -791,27 +632,27 @@ export async function POST(req: Request) {
             )
             
             if (!fuzzyMatch) {
-              console.log(`Missing aspect: "${requiredAspect}" (no match found)`)
+              debugLog(`Missing aspect: "${requiredAspect}" (no match found)`)
               missingAspects.push(requiredAspect)
             } else {
               // Found via fuzzy match, check if it has values
               const matchedKey = aspectNameMap.get(fuzzyMatch)
               const aspectValues = matchedKey ? formattedAspects[matchedKey] : null
               if (!aspectValues || (Array.isArray(aspectValues) && aspectValues.length === 0)) {
-                console.log(`Missing aspect: "${requiredAspect}" (found key "${matchedKey}" but no values)`)
+                debugLog(`Missing aspect: "${requiredAspect}" (found key "${matchedKey}" but no values)`)
                 missingAspects.push(requiredAspect)
               } else {
-                console.log(`Found aspect: "${requiredAspect}" via fuzzy match "${matchedKey}" with values:`, aspectValues)
+                debugLog(`Found aspect: "${requiredAspect}" via fuzzy match "${matchedKey}" with values:`, aspectValues)
               }
             }
           } else {
             // Found exact match, check if it has values
             const aspectValues = formattedAspects[exactKey]
             if (!aspectValues || (Array.isArray(aspectValues) && aspectValues.length === 0)) {
-              console.log(`Missing aspect: "${requiredAspect}" (found key "${exactKey}" but no values)`)
+              debugLog(`Missing aspect: "${requiredAspect}" (found key "${exactKey}" but no values)`)
               missingAspects.push(requiredAspect)
             } else {
-              console.log(`Found aspect: "${requiredAspect}" with values:`, aspectValues)
+              debugLog(`Found aspect: "${requiredAspect}" with values:`, aspectValues)
             }
           }
         })
@@ -863,7 +704,7 @@ export async function POST(req: Request) {
           )
         }
         
-        console.log("✅ All required aspects validated:", requiredAspects)
+        debugLog("✅ All required aspects validated:", requiredAspects)
       }
     } catch (validationError) {
       // If validation fails, log but continue (don't block listing)
@@ -871,11 +712,11 @@ export async function POST(req: Request) {
     }
     
     // Build inventory payload (SKU is in URL, not body!)
-    console.log("[LIST API DEBUG] ========== BUILDING INVENTORY ITEM PAYLOAD ==========")
-    console.log("[LIST API DEBUG] productObj before adding to payload:", JSON.stringify(productObj, null, 2))
-    console.log("[LIST API DEBUG] productObj.description exists:", !!productObj.description)
-    console.log("[LIST API DEBUG] productObj.description value:", productObj.description)
-    console.log("[LIST API DEBUG] productObj.description length:", productObj.description ? productObj.description.length : 0)
+    debugLog("[LIST API DEBUG] ========== BUILDING INVENTORY ITEM PAYLOAD ==========")
+    debugLog("[LIST API DEBUG] productObj before adding to payload:", JSON.stringify(productObj, null, 2))
+    debugLog("[LIST API DEBUG] productObj.description exists:", !!productObj.description)
+    debugLog("[LIST API DEBUG] productObj.description value:", productObj.description)
+    debugLog("[LIST API DEBUG] productObj.description length:", productObj.description ? productObj.description.length : 0)
     
     const inventoryItemPayload: any = {
       product: productObj,
@@ -889,46 +730,40 @@ export async function POST(req: Request) {
     
     // Set seller note in conditionDescription field (this appears as "Seller Notes" on eBay)
     inventoryItemPayload.conditionDescription = sellerNote
-    console.log("[LIST API DEBUG] inventoryItemPayload.conditionDescription:", {
+    debugLog("[LIST API DEBUG] inventoryItemPayload.conditionDescription:", {
       value: inventoryItemPayload.conditionDescription,
       length: inventoryItemPayload.conditionDescription
         ? inventoryItemPayload.conditionDescription.length
         : 0,
     })
     
-    console.log("[LIST API DEBUG] inventoryItemPayload.product.description:", inventoryItemPayload.product.description)
-    console.log("[LIST API DEBUG] Full inventoryItemPayload:", JSON.stringify(inventoryItemPayload, null, 2))
+    debugLog("[LIST API DEBUG] inventoryItemPayload.product.description:", inventoryItemPayload.product.description)
+    debugLog("[LIST API DEBUG] Full inventoryItemPayload:", JSON.stringify(inventoryItemPayload, null, 2))
     
     // Log the payload for debugging
-    console.log("Creating inventory item with payload:", JSON.stringify(inventoryItemPayload, null, 2))
+    debugLog("Creating inventory item with payload:", JSON.stringify(inventoryItemPayload, null, 2))
     
     // Log complete request details for Postman
     const inventoryUrl = `${baseUrl}/sell/inventory/v1/inventory_item/${sku}`
-    console.log("=".repeat(80))
-    console.log("API CALL #1: CREATE INVENTORY ITEM")
-    console.log("URL:", inventoryUrl)
-    console.log("Method: PUT")
-    console.log("Headers:", JSON.stringify({
-      'Authorization': `Bearer ${accessToken}`,
+    debugLog("=".repeat(80))
+    debugLog("API CALL #1: CREATE INVENTORY ITEM")
+    debugLog("URL:", inventoryUrl)
+    debugLog("Method: PUT")
+    debugLog("Headers:", JSON.stringify({
+      'Authorization': "Bearer <redacted>",
       'Content-Type': 'application/json',
       'Content-Language': 'en-US',
       'Accept-Language': 'en-US',
       'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
     }, null, 2))
-    console.log("Body:", JSON.stringify(inventoryItemPayload, null, 2))
-    console.log("=".repeat(80))
+    debugLog("Body:", JSON.stringify(inventoryItemPayload, null, 2))
+    debugLog("=".repeat(80))
 
     const inventoryResponse = await fetch(
       inventoryUrl,
       {
         method: "PUT",
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'Content-Language': 'en-US',
-          'Accept-Language': 'en-US',
-          'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-        },
+        headers: ebayHeaders(accessToken),
         body: JSON.stringify(inventoryItemPayload),
       }
     )
@@ -942,10 +777,9 @@ export async function POST(req: Request) {
 
     // Check for 204 No Content (success with no body)
     if (inventoryResponse.status === 204) {
-      console.log("✅ Inventory item created successfully (204 No Content)")
+      debugLog("✅ Inventory item created successfully (204 No Content)")
     } else if (!inventoryResponse.ok) {
-      const errorData = await inventoryResponse.json().catch(() => ({}))
-      const errorText = await inventoryResponse.text().catch(() => "")
+      const { errorData, errorText } = await readErrorBody(inventoryResponse)
       
       // Log full error for debugging
       console.error("eBay Inventory API Error:", {
@@ -1019,17 +853,11 @@ export async function POST(req: Request) {
     let merchantLocationKey = ""
     
     try {
-      console.log("Fetching inventory locations...")
+      debugLog("Fetching inventory locations...")
       const locationsResponse = await fetch(
         `${baseUrl}/sell/inventory/v1/location`,
         {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            'Content-Language': 'en-US',
-            'Accept-Language': 'en-US',
-            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-          },
+          headers: ebayHeaders(accessToken),
         }
       )
       
@@ -1037,7 +865,7 @@ export async function POST(req: Request) {
         const locationsData = await locationsResponse.json()
         if (locationsData.locations && locationsData.locations.length > 0) {
           merchantLocationKey = locationsData.locations[0].merchantLocationKey
-          console.log("Found inventory location:", merchantLocationKey)
+          debugLog("Found inventory location:", merchantLocationKey)
         } else {
           console.warn("No inventory locations found for user")
         }
@@ -1067,11 +895,7 @@ export async function POST(req: Request) {
     let returnPolicyId = "default"
     
     try {
-      // First, try to get user's saved policy preferences from database
-      const savedPolicies = await (prisma as any).ebayBusinessPolicies.findUnique({
-        where: { userId: session.user.id }
-      })
-
+      // savedPolicies was loaded in parallel with the other user settings above
       if (savedPolicies) {
         // Use saved policies if available
         if (savedPolicies.fulfillmentPolicyId) {
@@ -1083,102 +907,52 @@ export async function POST(req: Request) {
         if (savedPolicies.returnPolicyId) {
           returnPolicyId = savedPolicies.returnPolicyId
         }
-        console.log("Using saved policies:", { fulfillmentPolicyId, paymentPolicyId, returnPolicyId })
+        debugLog("Using saved policies:", { fulfillmentPolicyId, paymentPolicyId, returnPolicyId })
       } else {
-        // Fall back to fetching policies from eBay
-        console.log("No saved policies found, fetching from eBay...")
-        
-        // Fetch Fulfillment Policy
-        try {
-          const fulfillmentResponse = await fetch(
-            `${baseUrl}/sell/account/v1/fulfillment_policy`,
-            {
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-                'Content-Language': 'en-US',
-                'Accept-Language': 'en-US',
-                'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-              },
-            }
-          )
-          
-          if (fulfillmentResponse.ok) {
-            const data = await fulfillmentResponse.json()
-            if (data.fulfillmentPolicies && data.fulfillmentPolicies.length > 0) {
-              fulfillmentPolicyId = data.fulfillmentPolicies[0].fulfillmentPolicyId
-              console.log("Found fulfillment policy:", fulfillmentPolicyId)
-            }
+        // Fall back to fetching policies from eBay - the three policy types
+        // are independent, so fetch them in parallel
+        debugLog("No saved policies found, fetching from eBay...")
+
+        const fetchFirstPolicy = async (
+          endpoint: string,
+          listKey: string,
+          idKey: string
+        ): Promise<string | null> => {
+          try {
+            const response = await fetch(`${baseUrl}/sell/account/v1/${endpoint}`, {
+              headers: ebayHeaders(accessToken),
+            })
+            if (!response.ok) return null
+            const data = await response.json()
+            return data[listKey]?.[0]?.[idKey] ?? null
+          } catch (err) {
+            console.error(`Failed to fetch ${endpoint}:`, err)
+            return null
           }
-        } catch (err) {
-          console.error("Failed to fetch fulfillment policy:", err)
         }
-        
-        // Fetch Payment Policy
-        try {
-          const paymentResponse = await fetch(
-            `${baseUrl}/sell/account/v1/payment_policy`,
-            {
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-                'Content-Language': 'en-US',
-                'Accept-Language': 'en-US',
-                'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-              },
-            }
-          )
-          
-          if (paymentResponse.ok) {
-            const data = await paymentResponse.json()
-            if (data.paymentPolicies && data.paymentPolicies.length > 0) {
-              paymentPolicyId = data.paymentPolicies[0].paymentPolicyId
-              console.log("Found payment policy:", paymentPolicyId)
-            }
-          }
-        } catch (err) {
-          console.error("Failed to fetch payment policy:", err)
-        }
-        
-        // Fetch Return Policy
-        try {
-          const returnResponse = await fetch(
-            `${baseUrl}/sell/account/v1/return_policy`,
-            {
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-                'Content-Language': 'en-US',
-                'Accept-Language': 'en-US',
-                'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-              },
-            }
-          )
-          
-          if (returnResponse.ok) {
-            const data = await returnResponse.json()
-            if (data.returnPolicies && data.returnPolicies.length > 0) {
-              returnPolicyId = data.returnPolicies[0].returnPolicyId
-              console.log("Found return policy:", returnPolicyId)
-            }
-          }
-        } catch (err) {
-          console.error("Failed to fetch return policy:", err)
-        }
+
+        const [fetchedFulfillment, fetchedPayment, fetchedReturn] = await Promise.all([
+          fetchFirstPolicy("fulfillment_policy", "fulfillmentPolicies", "fulfillmentPolicyId"),
+          fetchFirstPolicy("payment_policy", "paymentPolicies", "paymentPolicyId"),
+          fetchFirstPolicy("return_policy", "returnPolicies", "returnPolicyId"),
+        ])
+
+        if (fetchedFulfillment) fulfillmentPolicyId = fetchedFulfillment
+        if (fetchedPayment) paymentPolicyId = fetchedPayment
+        if (fetchedReturn) returnPolicyId = fetchedReturn
+        debugLog("Fetched policies from eBay:", { fulfillmentPolicyId, paymentPolicyId, returnPolicyId })
       }
     } catch (policyError) {
       console.error("Error fetching policies:", policyError)
       // Use defaults if policy fetch fails
     }
 
-    // Load global offer settings (Allow Offers + Minimum Offer Amount)
-    const offerSettings = await (prisma as any).offerSettings.findUnique({
-      where: { userId: session.user.id },
-    })
+    // Global offer settings (Allow Offers + Minimum Offer Amount) were loaded
+    // in parallel with the other user settings above
     const allowOffers = !!offerSettings?.allowOffers
     const minimumOfferAmount = Number(offerSettings?.minimumOfferAmount ?? 10.0)
 
-    console.log("[LIST API DEBUG] Offer settings loaded:", {
+    debugLog("[LIST API DEBUG] Offer settings loaded:", {
       allowOffers,
       minimumOfferAmount,
       listingPrice: priceNum,
@@ -1209,8 +983,8 @@ export async function POST(req: Request) {
     // Step 4: Create an offer
     // finalCategoryId is already determined during validation above
     
-    console.log("[LIST API DEBUG] ========== BUILDING OFFER PAYLOAD ==========")
-    console.log("[LIST API DEBUG] Creating offer payload with description:", {
+    debugLog("[LIST API DEBUG] ========== BUILDING OFFER PAYLOAD ==========")
+    debugLog("[LIST API DEBUG] Creating offer payload with description:", {
       description: description,
       descriptionLength: description ? description.length : 0,
       descriptionPreview: description ? description.substring(0, 100) : "null/undefined",
@@ -1219,7 +993,7 @@ export async function POST(req: Request) {
     })
     
     const listingDescriptionForOffer = description ? description.substring(0, 50000) : ""
-    console.log("[LIST API DEBUG] listingDescriptionForOffer:", {
+    debugLog("[LIST API DEBUG] listingDescriptionForOffer:", {
       value: listingDescriptionForOffer,
       length: listingDescriptionForOffer.length,
       preview: listingDescriptionForOffer.substring(0, 100)
@@ -1262,16 +1036,16 @@ export async function POST(req: Request) {
       }
     }
     
-    console.log("[LIST API DEBUG] ========== OFFER PAYLOAD BEFORE SENDING ==========")
-    console.log("[LIST API DEBUG] offerPayload.listingDescription:", {
+    debugLog("[LIST API DEBUG] ========== OFFER PAYLOAD BEFORE SENDING ==========")
+    debugLog("[LIST API DEBUG] offerPayload.listingDescription:", {
       exists: !!offerPayload.listingDescription,
       value: offerPayload.listingDescription,
       length: offerPayload.listingDescription ? offerPayload.listingDescription.length : 0,
       preview: offerPayload.listingDescription ? offerPayload.listingDescription.substring(0, 100) : "null/undefined"
     })
-    console.log("[LIST API DEBUG] Full offerPayload:", JSON.stringify(offerPayload, null, 2))
+    debugLog("[LIST API DEBUG] Full offerPayload:", JSON.stringify(offerPayload, null, 2))
     
-    console.log("Offer payload includes:", {
+    debugLog("Offer payload includes:", {
       listingDuration: offerPayload.listingDuration,
       listingDescription: offerPayload.listingDescription ? `${offerPayload.listingDescription.substring(0, 50)}... (${offerPayload.listingDescription.length} chars)` : "MISSING",
       includeCatalogProductDetails: offerPayload.includeCatalogProductDetails,
@@ -1285,111 +1059,94 @@ export async function POST(req: Request) {
     
     // Log complete request details for Postman
     const offerUrl = `${baseUrl}/sell/inventory/v1/offer`
-    console.log("=".repeat(80))
-    console.log("API CALL #4: CREATE OFFER")
-    console.log("URL:", offerUrl)
-    console.log("Method: POST")
-    console.log("Headers:", JSON.stringify({
-      'Authorization': `Bearer ${accessToken}`,
+    debugLog("=".repeat(80))
+    debugLog("API CALL #4: CREATE OFFER")
+    debugLog("URL:", offerUrl)
+    debugLog("Method: POST")
+    debugLog("Headers:", JSON.stringify({
+      'Authorization': "Bearer <redacted>",
       'Content-Type': 'application/json',
       'Content-Language': 'en-US',
       'Accept-Language': 'en-US',
       'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
     }, null, 2))
-    console.log("Body:", JSON.stringify(offerPayload, null, 2))
-    console.log("=".repeat(80))
+    debugLog("Body:", JSON.stringify(offerPayload, null, 2))
+    debugLog("=".repeat(80))
 
     const offerResponse = await fetch(
       offerUrl,
       {
         method: "POST",
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'Content-Language': 'en-US',
-          'Accept-Language': 'en-US',
-          'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-        },
+        headers: ebayHeaders(accessToken),
         body: JSON.stringify(offerPayload),
       }
     )
     
-    console.log("[LIST API DEBUG] ========== OFFER API RESPONSE ==========")
-    console.log("[LIST API DEBUG] Offer API Response Status:", offerResponse.status, offerResponse.statusText)
-
-    // Check for 401 Unauthorized - token might be invalid
-    if (offerResponse.status === 401) {
-      console.error("401 Unauthorized from eBay Offer API - token may be invalid")
-      const errorData = await offerResponse.json().catch(() => ({}))
-      const errorCode = errorData.errors?.[0]?.errorId || errorData.errors?.[0]?.code
-      
-      if (errorCode === 2004) {
-        console.error("Error 2004 in offer creation - token missing required scopes.")
-        return NextResponse.json(
-          { 
-            error: "Your eBay token is missing the required 'sell.inventory' scope for creating offers. Please disconnect and reconnect your eBay account.",
-            errorCode: 2004,
-            needsReconnect: true,
-          },
-          { status: 401 }
-        )
-      }
-    }
+    debugLog("[LIST API DEBUG] ========== OFFER API RESPONSE ==========")
+    debugLog("[LIST API DEBUG] Offer API Response Status:", offerResponse.status, offerResponse.statusText)
 
     if (!offerResponse.ok) {
-      const errorData = await offerResponse.json().catch(() => ({}))
+      // Body can only be read once - read it here and reuse for all checks below
+      const { errorData } = await readErrorBody(offerResponse)
+
+      // Check for 401 Unauthorized - token might be invalid
+      if (offerResponse.status === 401) {
+        console.error("401 Unauthorized from eBay Offer API - token may be invalid")
+        const authErrorCode = errorData.errors?.[0]?.errorId || errorData.errors?.[0]?.code
+
+        if (authErrorCode === 2004) {
+          console.error("Error 2004 in offer creation - token missing required scopes.")
+          return NextResponse.json(
+            {
+              error: "Your eBay token is missing the required 'sell.inventory' scope for creating offers. Please disconnect and reconnect your eBay account.",
+              errorCode: 2004,
+              needsReconnect: true,
+            },
+            { status: 401 }
+          )
+        }
+      }
+
       const errorCode = errorData.errors?.[0]?.errorId
       
       // Error 25002: Offer already exists - try to update existing offer instead
       if (errorCode === 25002) {
-        console.log("Offer already exists, attempting to update existing offer...")
+        debugLog("Offer already exists, attempting to update existing offer...")
         const existingOfferId = errorData.errors?.[0]?.parameters?.find((p: any) => p.name === "offerId")?.value
         
         if (existingOfferId) {
-          console.log("Found existing offer ID:", existingOfferId)
+          debugLog("Found existing offer ID:", existingOfferId)
           
           // Try to update the existing offer
           const updateUrl = `${baseUrl}/sell/inventory/v1/offer/${existingOfferId}`
-          console.log("Updating existing offer:", updateUrl)
+          debugLog("Updating existing offer:", updateUrl)
           
           const updateResponse = await fetch(updateUrl, {
             method: "PUT",
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-              'Content-Language': 'en-US',
-              'Accept-Language': 'en-US',
-              'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-            },
+            headers: ebayHeaders(accessToken),
             body: JSON.stringify(offerPayload),
           })
           
           if (updateResponse.ok) {
-            console.log("✅ Existing offer updated successfully")
+            debugLog("✅ Existing offer updated successfully")
             // Use the existing offer ID to publish
             const offerId = existingOfferId
             await logOfferState(baseUrl, accessToken, offerId, "AFTER_EXISTING_OFFER_UPDATE_BEFORE_PUBLISH")
             
             // Continue to Step 5: Publish the offer
             const publishUrl = `${baseUrl}/sell/inventory/v1/offer/${offerId}/publish`
-            console.log("=".repeat(80))
-            console.log("API CALL #5: PUBLISH OFFER (existing)")
-            console.log("URL:", publishUrl)
-            console.log("=".repeat(80))
+            debugLog("=".repeat(80))
+            debugLog("API CALL #5: PUBLISH OFFER (existing)")
+            debugLog("URL:", publishUrl)
+            debugLog("=".repeat(80))
             
             const publishResponse = await fetch(publishUrl, {
               method: "POST",
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-                'Content-Language': 'en-US',
-                'Accept-Language': 'en-US',
-                'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-              },
+              headers: ebayHeaders(accessToken),
             })
             
             if (!publishResponse.ok) {
-              const publishErrorData = await publishResponse.json().catch(() => ({}))
+              const { errorData: publishErrorData } = await readErrorBody(publishResponse)
               const publishErrorMessage = publishErrorData.errors?.[0]?.message || "Failed to publish existing offer"
               const publishErrorCode = publishErrorData.errors?.[0]?.errorId
               const publishErrorParams = publishErrorData.errors?.[0]?.parameters || []
@@ -1409,11 +1166,7 @@ export async function POST(req: Request) {
                 try {
                   const taxonomyUrl = `${baseUrl}/sell/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${finalCategoryId}`
                   const taxonomyResponse = await fetch(taxonomyUrl, {
-                    headers: {
-                      'Authorization': `Bearer ${accessToken}`,
-                      'Content-Type': 'application/json',
-                      'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-                    },
+                    headers: ebayHeaders(accessToken),
                   })
                   
                   if (taxonomyResponse.ok) {
@@ -1530,20 +1283,7 @@ export async function POST(req: Request) {
               }
             }
             
-            // Update SKU counter after successful listing
-            if (shouldIncrementCounter) {
-              try {
-                await (prisma as any).skuSettings.update({
-                  where: { userId: session.user.id },
-                  data: {
-                    nextSkuCounter: skuSettings.nextSkuCounter + 1,
-                  }
-                })
-              } catch (error) {
-                console.error("Failed to update SKU counter:", error)
-              }
-            }
-            
+            // SKU counter was already claimed atomically before listing
             return NextResponse.json({
               success: true,
               message: "Product listing updated and published successfully on eBay",
@@ -1567,7 +1307,7 @@ export async function POST(req: Request) {
                   : false,
             })
           } else {
-            const updateErrorData = await updateResponse.json().catch(() => ({}))
+            const { errorData: updateErrorData } = await readErrorBody(updateResponse)
             console.error("Failed to update existing offer:", updateErrorData)
             
             // If update fails, suggest deleting and trying again
@@ -1588,10 +1328,7 @@ export async function POST(req: Request) {
       try {
         await fetch(`${baseUrl}/sell/inventory/v1/inventory_item/${finalSku}`, {
           method: "DELETE",
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-          },
+          headers: ebayHeaders(accessToken),
         })
       } catch (cleanupError) {
         // Ignore cleanup errors
@@ -1622,9 +1359,9 @@ export async function POST(req: Request) {
     }
 
     const offerData = await offerResponse.json()
-    console.log("[LIST API DEBUG] ========== OFFER CREATED SUCCESSFULLY ==========")
-    console.log("[LIST API DEBUG] Offer Response Data:", JSON.stringify(offerData, null, 2))
-    console.log("[LIST API DEBUG] Offer ID:", offerData.offerId)
+    debugLog("[LIST API DEBUG] ========== OFFER CREATED SUCCESSFULLY ==========")
+    debugLog("[LIST API DEBUG] Offer Response Data:", JSON.stringify(offerData, null, 2))
+    debugLog("[LIST API DEBUG] Offer ID:", offerData.offerId)
     
     const offerId = offerData.offerId
 
@@ -1642,69 +1379,64 @@ export async function POST(req: Request) {
 
     // Step 5: Publish the offer
     // Log what we're attempting to publish
-    console.log("=".repeat(80))
-    console.log("PREPARING TO PUBLISH OFFER")
-    console.log("Offer ID:", offerId)
-    console.log("SKU:", finalSku)
-    console.log("Category:", finalCategoryId)
-    console.log("Has Product Aspects:", !!productObj.aspects)
+    debugLog("=".repeat(80))
+    debugLog("PREPARING TO PUBLISH OFFER")
+    debugLog("Offer ID:", offerId)
+    debugLog("SKU:", finalSku)
+    debugLog("Category:", finalCategoryId)
+    debugLog("Has Product Aspects:", !!productObj.aspects)
     if (productObj.aspects) {
-      console.log("Product Aspects:", JSON.stringify(productObj.aspects, null, 2))
+      debugLog("Product Aspects:", JSON.stringify(productObj.aspects, null, 2))
     }
-    console.log("Has Business Policies:", !!(fulfillmentPolicyId !== "default" && paymentPolicyId !== "default" && returnPolicyId !== "default"))
-    console.log("Merchant Location Key:", merchantLocationKey)
-    console.log("=".repeat(80))
+    debugLog("Has Business Policies:", !!(fulfillmentPolicyId !== "default" && paymentPolicyId !== "default" && returnPolicyId !== "default"))
+    debugLog("Merchant Location Key:", merchantLocationKey)
+    debugLog("=".repeat(80))
     
     const publishUrl = `${baseUrl}/sell/inventory/v1/offer/${offerId}/publish`
-    console.log("=".repeat(80))
-    console.log("API CALL #5: PUBLISH OFFER")
-    console.log("URL:", publishUrl)
-    console.log("Method: POST")
-    console.log("Headers:", JSON.stringify({
-      'Authorization': `Bearer ${accessToken}`,
+    debugLog("=".repeat(80))
+    debugLog("API CALL #5: PUBLISH OFFER")
+    debugLog("URL:", publishUrl)
+    debugLog("Method: POST")
+    debugLog("Headers:", JSON.stringify({
+      'Authorization': "Bearer <redacted>",
       'Content-Type': 'application/json',
       'Content-Language': 'en-US',
       'Accept-Language': 'en-US',
       'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
     }, null, 2))
-    console.log("Body: {} (empty)")
-    console.log("=".repeat(80))
+    debugLog("Body: {} (empty)")
+    debugLog("=".repeat(80))
     
     const publishResponse = await fetch(
       publishUrl,
       {
         method: "POST",
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'Content-Language': 'en-US',
-          'Accept-Language': 'en-US',
-          'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-        },
+        headers: ebayHeaders(accessToken),
       }
     )
 
-    // Check for 401 Unauthorized - token might be invalid
-    if (publishResponse.status === 401) {
-      console.error("401 Unauthorized from eBay Publish API - token may be invalid")
-      const errorData = await publishResponse.json().catch(() => ({}))
-      const errorCode = errorData.errors?.[0]?.errorId || errorData.errors?.[0]?.code
-      
-      if (errorCode === 2004) {
-        console.error("Error 2004 in publish - token missing required scopes.")
-        return NextResponse.json(
-          { 
-            error: "Your eBay token is missing the required 'sell.inventory' scope for publishing listings. Please disconnect and reconnect your eBay account.",
-            errorCode: 2004,
-            needsReconnect: true,
-          },
-          { status: 401 }
-        )
-      }
-    }
-
     if (!publishResponse.ok) {
-      const errorData = await publishResponse.json().catch(() => ({}))
+      // Body can only be read once - read it here and reuse for all checks below
+      const { errorData } = await readErrorBody(publishResponse)
+
+      // Check for 401 Unauthorized - token might be invalid
+      if (publishResponse.status === 401) {
+        console.error("401 Unauthorized from eBay Publish API - token may be invalid")
+        const authErrorCode = errorData.errors?.[0]?.errorId || errorData.errors?.[0]?.code
+
+        if (authErrorCode === 2004) {
+          console.error("Error 2004 in publish - token missing required scopes.")
+          return NextResponse.json(
+            {
+              error: "Your eBay token is missing the required 'sell.inventory' scope for publishing listings. Please disconnect and reconnect your eBay account.",
+              errorCode: 2004,
+              needsReconnect: true,
+            },
+            { status: 401 }
+          )
+        }
+      }
+
       const errorMessage = errorData.errors?.[0]?.message || errorData.errors?.[0]?.longMessage || "Failed to publish listing"
       const errorCode = errorData.errors?.[0]?.errorId
       const errorParameters = errorData.errors?.[0]?.parameters || []
@@ -1734,11 +1466,7 @@ export async function POST(req: Request) {
           try {
             const taxonomyUrl = `${baseUrl}/sell/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${finalCategoryId}`
             const taxonomyResponse = await fetch(taxonomyUrl, {
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-                'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-              },
+              headers: ebayHeaders(accessToken),
             })
             
             if (taxonomyResponse.ok) {
@@ -1852,32 +1580,18 @@ export async function POST(req: Request) {
       )
     }
 
-    console.log("[LIST API DEBUG] ========== PUBLISH RESPONSE ==========")
-    console.log("[LIST API DEBUG] Publish Response Status:", publishResponse.status, publishResponse.statusText)
+    debugLog("[LIST API DEBUG] ========== PUBLISH RESPONSE ==========")
+    debugLog("[LIST API DEBUG] Publish Response Status:", publishResponse.status, publishResponse.statusText)
     
     const publishData = await publishResponse.json()
     await logOfferState(baseUrl, accessToken, offerId, "AFTER_OFFER_PUBLISH")
     
-    console.log("[LIST API DEBUG] Publish Response Data:", JSON.stringify(publishData, null, 2))
-    console.log("[LIST API DEBUG] Listing ID:", publishData.listingId)
-    console.log("[LIST API DEBUG] Warnings:", publishData.warnings || "None")
-    console.log("[LIST API DEBUG] ========== LISTING COMPLETE ==========")
+    debugLog("[LIST API DEBUG] Publish Response Data:", JSON.stringify(publishData, null, 2))
+    debugLog("[LIST API DEBUG] Listing ID:", publishData.listingId)
+    debugLog("[LIST API DEBUG] Warnings:", publishData.warnings || "None")
+    debugLog("[LIST API DEBUG] ========== LISTING COMPLETE ==========")
 
-    // Update SKU counter after successful listing
-    if (shouldIncrementCounter) {
-      try {
-        await (prisma as any).skuSettings.update({
-          where: { userId: session.user.id },
-          data: {
-            nextSkuCounter: skuSettings.nextSkuCounter + 1,
-          }
-        })
-      } catch (error) {
-        // Log error but don't fail the listing if counter update fails
-        console.error("Failed to update SKU counter:", error)
-      }
-    }
-
+    // SKU counter was already claimed atomically before listing
     return NextResponse.json({
       success: true,
       message: "Product listed successfully on eBay",

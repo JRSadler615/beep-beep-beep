@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import {
+  readErrorBody,
+  getEbayBaseUrl,
+  getValidEbayToken,
+  debugLog,
+} from "@/lib/ebay"
 
 // Helper function to extract image size from eBay URL
 // Returns the size in pixels, or 0 if unknown
@@ -29,7 +35,7 @@ function getHighResImageUrl(imageUrl: string | undefined): { url: string; isHigh
   // If image is already 1200px or larger, it definitely meets eBay's 500px requirement
   // Use it as-is to avoid potential 404 errors from non-existent high-res URLs
   if (currentSize >= 1200) {
-    console.log(`[IMAGE RESIZE] Image already ${currentSize}px (>= 1200px), using as-is: ${imageUrl}`)
+    debugLog(`[IMAGE RESIZE] Image already ${currentSize}px (>= 1200px), using as-is: ${imageUrl}`)
     return { url: imageUrl, isHighRes: true }
   }
   
@@ -37,21 +43,21 @@ function getHighResImageUrl(imageUrl: string | undefined): { url: string; isHigh
   // Use it as-is - don't try to convert URLs as the converted URLs might not exist
   // eBay will check actual image dimensions, not just the URL
   if (currentSize > 640) {
-    console.log(`[IMAGE RESIZE] Image already ${currentSize}px (> 640px, should work with eBay), using as-is: ${imageUrl}`)
+    debugLog(`[IMAGE RESIZE] Image already ${currentSize}px (> 640px, should work with eBay), using as-is: ${imageUrl}`)
     return { url: imageUrl, isHighRes: true }
   }
   
   // If image is exactly 640px, return as-is but mark as potentially problematic
   // The main logic will handle falling back to seller images for 640px
   if (currentSize === 640) {
-    console.log(`[IMAGE RESIZE] Image is 640px (eBay rejects these in practice), returning as-is: ${imageUrl}`)
+    debugLog(`[IMAGE RESIZE] Image is 640px (eBay rejects these in practice), returning as-is: ${imageUrl}`)
     return { url: imageUrl, isHighRes: false } // Mark as potentially problematic
   }
   
   // If image is 500-639px, it meets the requirement but might be borderline
   // Use as-is
   if (currentSize >= 500 && currentSize < 640) {
-    console.log(`[IMAGE RESIZE] Image is ${currentSize}px (>= 500px but < 640px), using as-is: ${imageUrl}`)
+    debugLog(`[IMAGE RESIZE] Image is ${currentSize}px (>= 500px but < 640px), using as-is: ${imageUrl}`)
     return { url: imageUrl, isHighRes: true }
   }
   
@@ -59,12 +65,12 @@ function getHighResImageUrl(imageUrl: string | undefined): { url: string; isHigh
   // Try to convert to at least 500px, but this might fail
   if (currentSize > 0 && currentSize < 500) {
     const highResUrl = imageUrl.replace(/\/s-l\d+\.jpg/i, '/s-l500.jpg')
-    console.log(`[IMAGE RESIZE] Upscaling small image ${currentSize}px -> 500px: ${imageUrl} -> ${highResUrl}`)
+    debugLog(`[IMAGE RESIZE] Upscaling small image ${currentSize}px -> 500px: ${imageUrl} -> ${highResUrl}`)
     return { url: highResUrl, isHighRes: false } // Mark as potentially unreliable
   }
   
   // If no size parameter detected, return as-is (might be full resolution)
-  console.log(`[IMAGE RESIZE] No size parameter detected, using as-is: ${imageUrl}`)
+  debugLog(`[IMAGE RESIZE] No size parameter detected, using as-is: ${imageUrl}`)
   return { url: imageUrl, isHighRes: true }
 }
 
@@ -107,92 +113,22 @@ export async function GET(req: Request) {
       )
     }
 
-    // Get user's eBay access token from database
-    const ebayToken = await prisma.ebayToken.findUnique({
-      where: { userId: session.user.id }
-    })
-    
-    if (!ebayToken) {
+    // Get a valid eBay access token (refreshes automatically if expired)
+    const tokenResult = await getValidEbayToken(session.user.id)
+    if (!tokenResult.ok) {
       return NextResponse.json(
-        { error: "eBay account not connected. Please connect your eBay account first." },
-        { status: 400 }
+        {
+          error: tokenResult.error,
+          needsReconnect: tokenResult.needsReconnect,
+          details: tokenResult.details,
+        },
+        { status: tokenResult.status }
       )
     }
-
-    // Check if token is expired and refresh if necessary
-    let accessToken = ebayToken.accessToken
-    if (new Date() >= ebayToken.expiresAt) {
-      // Token is expired, try to refresh
-      if (!ebayToken.refreshToken) {
-        return NextResponse.json(
-          { error: "eBay token expired. Please reconnect your eBay account." },
-          { status: 401 }
-        )
-      }
-
-      // Refresh the token
-      const isSandbox = process.env.EBAY_SANDBOX === "true"
-      const tokenEndpoint = isSandbox
-        ? "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
-        : "https://api.ebay.com/identity/v1/oauth2/token"
-
-      const refreshResponse = await fetch(tokenEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Authorization: `Basic ${Buffer.from(
-            `${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`
-          ).toString("base64")}`,
-        },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: ebayToken.refreshToken,
-        }),
-      })
-
-      if (!refreshResponse.ok) {
-        const errorData = await refreshResponse.json().catch(() => ({}))
-        
-        // If refresh token is invalid/expired, delete the token record
-        // This forces the user to reconnect, which will get fresh tokens
-        if (refreshResponse.status === 400 || refreshResponse.status === 401) {
-          try {
-            await prisma.ebayToken.delete({
-              where: { userId: session.user.id }
-            })
-          } catch (deleteError) {
-            // Failed to delete invalid token
-          }
-        }
-        
-        return NextResponse.json(
-          { 
-            error: "Failed to refresh eBay token. Please reconnect your eBay account.",
-            needsReconnect: true
-          },
-          { status: 401 }
-        )
-      }
-
-      const refreshData = await refreshResponse.json()
-      accessToken = refreshData.access_token
-
-      // Update token in database
-      await prisma.ebayToken.update({
-        where: { userId: session.user.id },
-        data: {
-          accessToken: refreshData.access_token,
-          refreshToken: refreshData.refresh_token || ebayToken.refreshToken,
-          expiresAt: new Date(Date.now() + (refreshData.expires_in * 1000)),
-        },
-      })
-    }
+    const accessToken = tokenResult.accessToken
 
     // Make request to eBay Browse API
-    const isSandbox = process.env.EBAY_SANDBOX === "true"
-    const browseApiUrl = isSandbox
-      ? "https://api.sandbox.ebay.com/buy/browse/v1/item_summary/search"
-      : "https://api.ebay.com/buy/browse/v1/item_summary/search"
+    const browseApiUrl = `${getEbayBaseUrl()}/buy/browse/v1/item_summary/search`
 
     const ebayResponse = await fetch(
       `${browseApiUrl}?q=${encodeURIComponent(upc)}&fieldgroups=EXTENDED`,
@@ -206,7 +142,7 @@ export async function GET(req: Request) {
     )
     
     if (!ebayResponse.ok) {
-      const errorData = await ebayResponse.json().catch(() => ({}))
+      const { errorData } = await readErrorBody(ebayResponse)
       
       return NextResponse.json(
         { 
@@ -261,9 +197,9 @@ export async function GET(req: Request) {
     const originalSellerImage = product.image
     const originalSellerAdditionalImages = product.additionalImages || []
     
-    console.log(`[IMAGE FETCH] UPC: ${upc} - Starting image fetch process`)
-    console.log(`[IMAGE FETCH] Seller image from Browse API:`, originalSellerImage?.imageUrl || "None")
-    console.log(`[IMAGE FETCH] Seller additional images:`, originalSellerAdditionalImages.length)
+    debugLog(`[IMAGE FETCH] UPC: ${upc} - Starting image fetch process`)
+    debugLog(`[IMAGE FETCH] Seller image from Browse API:`, originalSellerImage?.imageUrl || "None")
+    debugLog(`[IMAGE FETCH] Seller additional images:`, originalSellerAdditionalImages.length)
     
     try {
       const isSandbox = process.env.EBAY_SANDBOX === "true"
@@ -271,8 +207,8 @@ export async function GET(req: Request) {
         ? "https://api.sandbox.ebay.com/commerce/catalog/v1_beta/product_summary/search"
         : "https://api.ebay.com/commerce/catalog/v1_beta/product_summary/search"
 
-      console.log(`[IMAGE FETCH] Attempting to fetch stock image from Catalog API...`)
-      console.log(`[IMAGE FETCH] Catalog API URL: ${catalogApiUrl}`)
+      debugLog(`[IMAGE FETCH] Attempting to fetch stock image from Catalog API...`)
+      debugLog(`[IMAGE FETCH] Catalog API URL: ${catalogApiUrl}`)
 
       const catalogResponse = await fetch(
         `${catalogApiUrl}?q=${encodeURIComponent(upc)}&fieldgroups=FULL`,
@@ -285,32 +221,32 @@ export async function GET(req: Request) {
         }
       )
 
-      console.log(`[IMAGE FETCH] Catalog API response status: ${catalogResponse.status} ${catalogResponse.statusText}`)
+      debugLog(`[IMAGE FETCH] Catalog API response status: ${catalogResponse.status} ${catalogResponse.statusText}`)
 
       if (catalogResponse.ok) {
         const catalogData = await catalogResponse.json().catch(() => ({} as any))
         const productSummaries = (catalogData as any).productSummaries
 
-        console.log(`[IMAGE FETCH] Catalog API returned ${productSummaries?.length || 0} product summaries`)
+        debugLog(`[IMAGE FETCH] Catalog API returned ${productSummaries?.length || 0} product summaries`)
 
         if (Array.isArray(productSummaries) && productSummaries.length > 0) {
           const catalogProduct = productSummaries[0] as any
           const stockImage = catalogProduct.image
           const stockAdditionalImages = catalogProduct.additionalImages
 
-          console.log(`[IMAGE FETCH] Stock image from catalog:`, stockImage?.imageUrl || "None")
-          console.log(`[IMAGE FETCH] Stock additional images:`, stockAdditionalImages?.length || 0)
+          debugLog(`[IMAGE FETCH] Stock image from catalog:`, stockImage?.imageUrl || "None")
+          debugLog(`[IMAGE FETCH] Stock additional images:`, stockAdditionalImages?.length || 0)
 
           if (stockImage?.imageUrl) {
             const stockImageSize = getImageSizeFromUrl(stockImage.imageUrl)
-            console.log(`[IMAGE FETCH] Stock image size from URL: ${stockImageSize}px`)
+            debugLog(`[IMAGE FETCH] Stock image size from URL: ${stockImageSize}px`)
             
             // eBay requires at least 500px, but in practice they reject 640px images too
             // So we'll only use stock images if they're > 640px (e.g., 800px+)
             // For 640px stock images, fall back to seller images to avoid listing errors
             if (stockImageSize > 0 && stockImageSize <= 640) {
-              console.log(`[IMAGE FETCH] ⚠️ Stock image size ${stockImageSize}px (<= 640px), falling back to seller images`)
-              console.log(`[IMAGE FETCH] Note: eBay rejects 640px images in practice even though they meet 500px requirement`)
+              debugLog(`[IMAGE FETCH] ⚠️ Stock image size ${stockImageSize}px (<= 640px), falling back to seller images`)
+              debugLog(`[IMAGE FETCH] Note: eBay rejects 640px images in practice even though they meet 500px requirement`)
               
               // Use seller images since stock images are 640px or smaller (eBay rejects these)
               product.image = originalSellerImage
@@ -326,7 +262,7 @@ export async function GET(req: Request) {
                 source: "seller_only_fallback_due_to_size",
               }
               
-              console.log(`[IMAGE FETCH] ✅ USING SELLER IMAGE (stock image ${stockImageSize}px <= 640px):`, originalSellerImage?.imageUrl || "None")
+              debugLog(`[IMAGE FETCH] ✅ USING SELLER IMAGE (stock image ${stockImageSize}px <= 640px):`, originalSellerImage?.imageUrl || "None")
             } else {
               // Stock image is 500px+ or unknown size, try to use it
               // Convert to high-res if needed for better quality
@@ -334,7 +270,7 @@ export async function GET(req: Request) {
               
               if (!highResStockImage) {
                 // Conversion failed, use seller images
-                console.log(`[IMAGE FETCH] ⚠️ Failed to process stock image, falling back to seller images`)
+                debugLog(`[IMAGE FETCH] ⚠️ Failed to process stock image, falling back to seller images`)
                 
                 product.image = originalSellerImage
                 product.additionalImages = originalSellerAdditionalImages
@@ -349,7 +285,7 @@ export async function GET(req: Request) {
                   source: "seller_only_fallback_conversion_failed",
                 }
                 
-                console.log(`[IMAGE FETCH] ✅ USING SELLER IMAGE (conversion failed):`, originalSellerImage?.imageUrl || "None")
+                debugLog(`[IMAGE FETCH] ✅ USING SELLER IMAGE (conversion failed):`, originalSellerImage?.imageUrl || "None")
               } else {
               // Stock image is good, convert additional images
               const highResStockAdditionalImages = Array.isArray(stockAdditionalImages)
@@ -366,8 +302,8 @@ export async function GET(req: Request) {
                     })
                 : []
               
-              console.log(`[IMAGE FETCH] High-res stock image:`, highResStockImage.imageUrl)
-              console.log(`[IMAGE FETCH] High-res stock additional images: ${highResStockAdditionalImages.length} (filtered from ${stockAdditionalImages?.length || 0})`)
+              debugLog(`[IMAGE FETCH] High-res stock image:`, highResStockImage.imageUrl)
+              debugLog(`[IMAGE FETCH] High-res stock additional images: ${highResStockAdditionalImages.length} (filtered from ${stockAdditionalImages?.length || 0})`)
               
               // Prefer stock image for primary display and listing.
               product.image = highResStockImage
@@ -387,12 +323,12 @@ export async function GET(req: Request) {
                 source: "stock_preferred_with_seller_fallback",
               }
               
-              console.log(`[IMAGE FETCH] ✅ USING HIGH-RES STOCK IMAGE: ${highResStockImage.imageUrl}`)
-              console.log(`[IMAGE FETCH] Additional images: ${product.additionalImages.length} (${highResStockAdditionalImages.length > 0 ? 'high-res stock' : 'seller fallback'})`)
+              debugLog(`[IMAGE FETCH] ✅ USING HIGH-RES STOCK IMAGE: ${highResStockImage.imageUrl}`)
+              debugLog(`[IMAGE FETCH] Additional images: ${product.additionalImages.length} (${highResStockAdditionalImages.length > 0 ? 'high-res stock' : 'seller fallback'})`)
               }
             }
           } else {
-            console.log(`[IMAGE FETCH] ⚠️ Catalog API returned product but no stock image URL found`)
+            debugLog(`[IMAGE FETCH] ⚠️ Catalog API returned product but no stock image URL found`)
             // Set metadata to show we tried but no stock image available
             product._imageSources = {
               stockImage: null,
@@ -401,10 +337,10 @@ export async function GET(req: Request) {
               sellerAdditionalImages: originalSellerAdditionalImages || [],
               source: "seller_only",
             }
-            console.log(`[IMAGE FETCH] ✅ USING SELLER IMAGE (no stock image available):`, originalSellerImage?.imageUrl || "None")
+            debugLog(`[IMAGE FETCH] ✅ USING SELLER IMAGE (no stock image available):`, originalSellerImage?.imageUrl || "None")
           }
         } else {
-          console.log(`[IMAGE FETCH] ⚠️ Catalog API returned no product summaries`)
+          debugLog(`[IMAGE FETCH] ⚠️ Catalog API returned no product summaries`)
           // Set metadata to show we tried but no products found
           product._imageSources = {
             stockImage: null,
@@ -413,11 +349,11 @@ export async function GET(req: Request) {
             sellerAdditionalImages: originalSellerAdditionalImages || [],
             source: "seller_only",
           }
-          console.log(`[IMAGE FETCH] ✅ USING SELLER IMAGE (no catalog products found):`, originalSellerImage?.imageUrl || "None")
+          debugLog(`[IMAGE FETCH] ✅ USING SELLER IMAGE (no catalog products found):`, originalSellerImage?.imageUrl || "None")
         }
       } else {
         const errorText = await catalogResponse.text().catch(() => "Unknown error")
-        console.log(`[IMAGE FETCH] ❌ Catalog API error: ${catalogResponse.status} - ${errorText.substring(0, 200)}`)
+        debugLog(`[IMAGE FETCH] ❌ Catalog API error: ${catalogResponse.status} - ${errorText.substring(0, 200)}`)
         // Set metadata to show catalog API failed
         product._imageSources = {
           stockImage: null,
@@ -426,10 +362,10 @@ export async function GET(req: Request) {
           sellerAdditionalImages: originalSellerAdditionalImages || [],
           source: "seller_only",
         }
-        console.log(`[IMAGE FETCH] ✅ USING SELLER IMAGE (catalog API failed):`, originalSellerImage?.imageUrl || "None")
+        debugLog(`[IMAGE FETCH] ✅ USING SELLER IMAGE (catalog API failed):`, originalSellerImage?.imageUrl || "None")
       }
     } catch (error) {
-      console.log(`[IMAGE FETCH] ❌ Exception while fetching stock image:`, error instanceof Error ? error.message : String(error))
+      debugLog(`[IMAGE FETCH] ❌ Exception while fetching stock image:`, error instanceof Error ? error.message : String(error))
       // Set metadata to show exception occurred
       product._imageSources = {
         stockImage: null,
@@ -438,11 +374,11 @@ export async function GET(req: Request) {
         sellerAdditionalImages: originalSellerAdditionalImages || [],
         source: "seller_only",
       }
-      console.log(`[IMAGE FETCH] ✅ USING SELLER IMAGE (exception occurred):`, originalSellerImage?.imageUrl || "None")
+      debugLog(`[IMAGE FETCH] ✅ USING SELLER IMAGE (exception occurred):`, originalSellerImage?.imageUrl || "None")
     }
     
-    console.log(`[IMAGE FETCH] Final image source: ${product._imageSources?.source || "unknown"}`)
-    console.log(`[IMAGE FETCH] Final primary image URL: ${product.image?.imageUrl || "None"}`)
+    debugLog(`[IMAGE FETCH] Final image source: ${product._imageSources?.source || "unknown"}`)
+    debugLog(`[IMAGE FETCH] Final primary image URL: ${product.image?.imageUrl || "None"}`)
     
     // Add metadata about the search for debugging
     const responseData = {

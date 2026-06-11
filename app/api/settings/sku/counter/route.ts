@@ -33,7 +33,7 @@ export async function POST(req: Request) {
     }
 
     // Update or create SKU settings
-    const updated = await (prisma as any).skuSettings.upsert({
+    const updated = await prisma.skuSettings.upsert({
       where: { userId: session.user.id },
       update: {
         nextSkuCounter: counter,

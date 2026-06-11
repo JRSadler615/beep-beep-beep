@@ -15,13 +15,13 @@ export async function GET() {
     }
 
     // Get or create discount settings for the user
-    let discountSettings = await (prisma as any).discountSettings.findUnique({
+    let discountSettings = await prisma.discountSettings.findUnique({
       where: { userId: session.user.id }
     })
 
     // If no settings exist, create default ones
     if (!discountSettings) {
-      discountSettings = await (prisma as any).discountSettings.create({
+      discountSettings = await prisma.discountSettings.create({
         data: {
           userId: session.user.id,
           discountAmount: 3.0,
@@ -93,7 +93,7 @@ export async function POST(req: Request) {
     }
 
     // Update or create settings
-    const updated = await (prisma as any).discountSettings.upsert({
+    const updated = await prisma.discountSettings.upsert({
       where: { userId: session.user.id },
       update: {
         ...(discountAmount !== undefined && { discountAmount: parseFloat(discountAmount) }),

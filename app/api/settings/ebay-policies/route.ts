@@ -15,7 +15,7 @@ export async function GET() {
     }
 
     // Get user's saved policies
-    const policies = await (prisma as any).ebayBusinessPolicies.findUnique({
+    const policies = await prisma.ebayBusinessPolicies.findUnique({
       where: { userId: session.user.id }
     })
 
@@ -70,7 +70,7 @@ export async function POST(req: Request) {
     } = body
 
     // Upsert (create or update) the policies
-    const policies = await (prisma as any).ebayBusinessPolicies.upsert({
+    const policies = await prisma.ebayBusinessPolicies.upsert({
       where: { userId: session.user.id },
       update: {
         paymentPolicyId,

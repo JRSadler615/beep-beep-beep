@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import { readErrorBody } from "@/lib/ebay"
 
 export async function GET(req: Request) {
   try {
@@ -78,8 +79,7 @@ export async function GET(req: Request) {
     })
 
     if (!tokenResponse.ok) {
-      const errorData = await tokenResponse.json().catch(() => ({}))
-      const errorText = await tokenResponse.text().catch(() => "")
+      const { errorData, errorText } = await readErrorBody(tokenResponse)
       
       console.error("eBay token exchange failed:", {
         status: tokenResponse.status,

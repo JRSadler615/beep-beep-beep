@@ -14,7 +14,7 @@ export async function GET() {
       )
     }
 
-    const bannedKeywords = await (prisma as any).bannedKeyword.findMany({
+    const bannedKeywords = await prisma.bannedKeyword.findMany({
       where: { userId: session.user.id },
       orderBy: { createdAt: "desc" },
     })
@@ -60,7 +60,7 @@ export async function POST(req: Request) {
     const trimmedKeyword = keyword.trim().toLowerCase()
 
     // Check if keyword already exists for this user
-    const existing = await (prisma as any).bannedKeyword.findUnique({
+    const existing = await prisma.bannedKeyword.findUnique({
       where: {
         userId_keyword: {
           userId: session.user.id,
@@ -77,7 +77,7 @@ export async function POST(req: Request) {
     }
 
     // Create the banned keyword
-    const bannedKeyword = await (prisma as any).bannedKeyword.create({
+    const bannedKeyword = await prisma.bannedKeyword.create({
       data: {
         userId: session.user.id,
         keyword: trimmedKeyword,
@@ -133,7 +133,7 @@ export async function DELETE(req: Request) {
     }
 
     // Verify the keyword belongs to the user
-    const bannedKeyword = await (prisma as any).bannedKeyword.findUnique({
+    const bannedKeyword = await prisma.bannedKeyword.findUnique({
       where: { id },
     })
 
@@ -152,7 +152,7 @@ export async function DELETE(req: Request) {
     }
 
     // Delete the keyword
-    await (prisma as any).bannedKeyword.delete({
+    await prisma.bannedKeyword.delete({
       where: { id },
     })
 

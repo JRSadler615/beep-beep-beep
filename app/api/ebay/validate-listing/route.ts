@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/prisma"
+import {
+  readErrorBody,
+  getEbayBaseUrl,
+  getValidEbayToken,
+  ebayHeaders,
+} from "@/lib/ebay"
 
 /**
  * GET: Validate listing requirements before attempting to list
@@ -28,87 +34,33 @@ export async function GET(req: Request) {
       )
     }
 
-    // Get user's eBay access token
-    const ebayToken = await prisma.ebayToken.findUnique({
-      where: { userId: session.user.id }
-    })
-    
-    if (!ebayToken) {
+    // Get a valid eBay access token (refreshes automatically if expired)
+    const tokenResult = await getValidEbayToken(session.user.id)
+    if (!tokenResult.ok) {
       return NextResponse.json(
-        { error: "eBay account not connected" },
-        { status: 400 }
+        {
+          error: tokenResult.error,
+          needsReconnect: tokenResult.needsReconnect,
+          details: tokenResult.details,
+        },
+        { status: tokenResult.status }
       )
     }
-
-    // Check if token is expired and refresh if necessary
-    let accessToken = ebayToken.accessToken
-    if (new Date() >= ebayToken.expiresAt) {
-      if (!ebayToken.refreshToken) {
-        return NextResponse.json(
-          { error: "eBay token expired. Please reconnect your eBay account." },
-          { status: 401 }
-        )
-      }
-
-      const isSandbox = process.env.EBAY_SANDBOX === "true"
-      const tokenEndpoint = isSandbox
-        ? "https://api.sandbox.ebay.com/identity/v1/oauth2/token"
-        : "https://api.ebay.com/identity/v1/oauth2/token"
-
-      const refreshResponse = await fetch(tokenEndpoint, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Authorization: `Basic ${Buffer.from(
-            `${process.env.EBAY_CLIENT_ID}:${process.env.EBAY_CLIENT_SECRET}`
-          ).toString("base64")}`,
-        },
-        body: new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: ebayToken.refreshToken,
-        }),
-      })
-
-      if (!refreshResponse.ok) {
-        return NextResponse.json(
-          { error: "Failed to refresh eBay token. Please reconnect your eBay account." },
-          { status: 401 }
-        )
-      }
-
-      const refreshData = await refreshResponse.json()
-      accessToken = refreshData.access_token
-
-      await prisma.ebayToken.update({
-        where: { userId: session.user.id },
-        data: {
-          accessToken: refreshData.access_token,
-          refreshToken: refreshData.refresh_token || ebayToken.refreshToken,
-          expiresAt: new Date(Date.now() + (refreshData.expires_in * 1000)),
-        },
-      })
-    }
+    const accessToken = tokenResult.accessToken
 
     // Fetch required item aspects for this category using Taxonomy API
-    const isSandbox = process.env.EBAY_SANDBOX === "true"
-    const baseUrl = isSandbox
-      ? "https://api.sandbox.ebay.com"
-      : "https://api.ebay.com"
+    const baseUrl = getEbayBaseUrl()
     
     const taxonomyUrl = `${baseUrl}/sell/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${categoryId}`
     
     console.log("Fetching required aspects for category:", categoryId)
     
     const taxonomyResponse = await fetch(taxonomyUrl, {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-      },
+      headers: ebayHeaders(accessToken),
     })
 
     if (!taxonomyResponse.ok) {
-      const errorData = await taxonomyResponse.json().catch(() => ({}))
+      const { errorData } = await readErrorBody(taxonomyResponse)
       console.error("Taxonomy API error:", errorData)
       
       // If taxonomy API fails, return what we can
