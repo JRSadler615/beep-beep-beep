@@ -2,6 +2,22 @@
   "name": "beep-beep",
   "version": "0.1.0",
   "private": true,
+  "description": "Marketplace operations dashboard for eBay sellers, built with Next.js App Router.  \r Users can connect their eBay account, search products by UPC, create listings with safety checks, and control SKUs, pricing, and keyword filters.",
+  "homepage": "https://github.com/quarterdeck-io/beep-beep#readme",
+  "bugs": {
+    "url": "https://github.com/quarterdeck-io/beep-beep/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quarterdeck-io/beep-beep.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "get-access-token.js",
+  "directories": {
+    "lib": "lib"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -22,8 +38,9 @@
     "@types/react-dom": "^19",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.2.3",
+    "event-notification-nodejs-sdk": "^1.0.3",
     "html5-qrcode": "^2.3.8",
-    "next": "16.0.3",
+    "next": "^16.2.9",
     "next-auth": "^5.0.0-beta.30",
     "prisma": "^6.19.0",
     "react": "19.2.0",
