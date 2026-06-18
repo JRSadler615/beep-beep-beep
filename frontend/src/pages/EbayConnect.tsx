@@ -2,6 +2,8 @@ import { useState, useEffect } from "react"
 import { Link, useSearchParams } from "react-router-dom"
 import { apiFetch } from "@/lib/api"
 
+const connectErrorMessage = "Could not start the eBay connection. Please try again."
+
 const errorMessages: Record<string, string> = {
   missing_credentials:
     "eBay API credentials not configured. Please add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET to the backend environment.",
@@ -49,12 +51,19 @@ export default function EbayConnect() {
     }
   }, [searchParams])
 
-  const handleConnect = () => {
+  const handleConnect = async () => {
     setConnecting(true)
-    // Full-page redirect into the backend OAuth flow. The backend ultimately
-    // redirects back here with ?success or ?error.
-    const apiBase = import.meta.env.VITE_API_URL || ""
-    window.location.href = `${apiBase}/api/ebay/connect`
+    setError("")
+    try {
+      // Fetch the eBay authorize URL from the backend (this call carries the
+      // Supabase bearer token), then redirect the browser to eBay. eBay sends
+      // the user back to the backend /callback, which redirects here.
+      const { url } = await apiFetch<{ url: string }>("/api/ebay/connect-url")
+      window.location.href = url
+    } catch (err: any) {
+      setError(err.message || connectErrorMessage)
+      setConnecting(false)
+    }
   }
 
   const handleDisconnect = async () => {

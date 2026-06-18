@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     def ebay_token_endpoint(self) -> str:
         return f"{self.ebay_base_url}/identity/v1/oauth2/token"
 
+    @property
+    def ebay_authorize_url(self) -> str:
+        # OAuth consent page lives on a different host than the API base.
+        host = "auth.sandbox.ebay.com" if self.EBAY_SANDBOX else "auth.ebay.com"
+        return f"https://{host}/oauth2/authorize"
+
 
 @lru_cache
 def get_settings() -> Settings:

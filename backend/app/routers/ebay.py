@@ -7,10 +7,14 @@ handler under `app/api/ebay/**`, using `get_valid_ebay_token` +
 """
 
 import asyncio
+import base64
 import json
 import re
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 import httpx
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -51,30 +55,124 @@ def disconnect(user_id: str = Depends(get_user_id)):
 
 
 # ---------------------------------------------------------------------------
-# OAuth flow — full-page redirects, so they can't use a Bearer header.
-# `connect` is authed (the SPA fetches the URL, then redirects); `callback`
-# is hit by eBay and trusts the signed `state` param.
+# OAuth flow
+#
+# A full-page redirect to eBay can't carry the Supabase Bearer header, so the
+# flow is split:
+#   1. GET /connect-url  (authed) -> the SPA fetches the eBay authorize URL and
+#      redirects the browser itself. The user id is embedded in a short-lived
+#      signed `state` token.
+#   2. GET /callback     (public) -> eBay redirects the browser here (this is
+#      the "auth accepted URL" registered against the RuName). We verify the
+#      signed state to recover the user id, exchange the code for tokens, store
+#      them, and redirect back to the SPA.
 # Spec: app/api/ebay/connect/route.ts, app/api/ebay/callback/route.ts
 # ---------------------------------------------------------------------------
 
+_STATE_TTL = timedelta(minutes=10)
 
-@router.get("/connect")
-def connect(user_id: str = Depends(get_user_id)):
-    """Build the eBay authorize URL and redirect. The SPA hits this with the
-    bearer token (XHR follows the redirect) OR, preferably, change the SPA to
-    fetch a JSON {url} and redirect itself. See README OAuth note.
-    """
-    if not settings.EBAY_CLIENT_ID or not settings.EBAY_RUNAME:
-        return RedirectResponse(f"{settings.FRONTEND_URL}/ebay-connect?error=missing_credentials")
-    # TODO: build authorize URL with scope + state=user_id (see connect/route.ts)
-    raise HTTPException(status_code=501, detail="connect not implemented")
+
+def _sign_state(user_id: str) -> str:
+    """Tamper-proof state param. The callback has no session, so the user id
+    must travel in a signed token rather than a plain string."""
+    return jwt.encode(
+        {"sub": user_id, "exp": datetime.now(tz=timezone.utc) + _STATE_TTL},
+        settings.SUPABASE_JWT_SECRET,
+        algorithm="HS256",
+    )
+
+
+def _verify_state(state: str) -> str | None:
+    try:
+        return jwt.decode(state, settings.SUPABASE_JWT_SECRET, algorithms=["HS256"])["sub"]
+    except jwt.PyJWTError:
+        return None
+
+
+@router.get("/connect-url")
+def connect_url(user_id: str = Depends(get_user_id)):
+    """Return the eBay OAuth authorize URL for the SPA to redirect to."""
+    if not settings.EBAY_CLIENT_ID or not settings.EBAY_CLIENT_SECRET:
+        raise HTTPException(status_code=400, detail="eBay API credentials not configured")
+    ru_name = (settings.EBAY_RUNAME or "").strip()
+    if not ru_name:
+        raise HTTPException(status_code=400, detail="EBAY_RUNAME not configured")
+    if "sell.inventory" not in settings.EBAY_SCOPE:
+        raise HTTPException(status_code=400, detail="EBAY_SCOPE missing sell.inventory")
+
+    params = {
+        "client_id": settings.EBAY_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": ru_name,  # the RuName; eBay resolves it to the accepted URL
+        "scope": settings.EBAY_SCOPE,
+        "state": _sign_state(user_id),
+        "prompt": "login",
+    }
+    return {"url": f"{settings.ebay_authorize_url}?{urlencode(params)}"}
 
 
 @router.get("/callback")
-def callback(code: str = Query(...), state: str = Query(...)):
-    # TODO: exchange `code` for tokens, upsert into ebay_tokens for the user in
-    # `state`, then RedirectResponse to FRONTEND_URL/ebay-connect?success=true
-    raise HTTPException(status_code=501, detail="callback not implemented")
+async def callback(
+    code: str | None = Query(None),
+    state: str | None = Query(None),
+    error: str | None = Query(None),
+):
+    fe = settings.FRONTEND_URL.rstrip("/")
+
+    def redirect_error(kind: str) -> RedirectResponse:
+        return RedirectResponse(f"{fe}/ebay-connect?error={kind}")
+
+    if error:
+        return redirect_error("oauth_declined")
+    if not code or not state:
+        return redirect_error("no_code")
+
+    user_id = _verify_state(state)
+    if not user_id:
+        return redirect_error("unauthorized")
+
+    ru_name = (settings.EBAY_RUNAME or "").strip()
+    if not ru_name:
+        return redirect_error("misconfigured")
+
+    creds = base64.b64encode(
+        f"{settings.EBAY_CLIENT_ID}:{settings.EBAY_CLIENT_SECRET}".encode()
+    ).decode()
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            settings.ebay_token_endpoint,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Authorization": f"Basic {creds}",
+            },
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": ru_name,  # must match the authorize request exactly
+            },
+        )
+
+    if resp.status_code >= 400:
+        body = resp.text
+        kind = "token_exchange_failed"
+        if "redirect_uri" in body:
+            kind = "redirect_uri_mismatch"
+        return redirect_error(kind)
+
+    data = resp.json()
+    expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=data["expires_in"])
+    supabase.table("ebay_tokens").upsert(
+        {
+            "user_id": user_id,
+            "access_token": data["access_token"],
+            "refresh_token": data.get("refresh_token"),
+            "expires_at": expires_at.isoformat(),
+        },
+        on_conflict="user_id",
+    ).execute()
+
+    return RedirectResponse(f"{fe}/ebay-connect?success=true")
 
 
 # ---------------------------------------------------------------------------

@@ -59,10 +59,15 @@ request/response shapes and eBay logic.
   `sku_settings`, `banned_keywords`, `discount_settings`, `edit_mode_settings`,
   `override_description_settings`, `seller_note_settings`, `offer_settings`,
   `ebay_business_policies`.
-- **OAuth redirects:** `/api/ebay/connect` and `/callback` are full-page
-  navigations and can't carry a Bearer header. Preferred approach: change the
-  SPA to `fetch` an authed endpoint that returns the eBay authorize URL, then
-  redirect itself; the `state` param carries the user id into `/callback`.
+- **OAuth flow (implemented):** `GET /api/ebay/connect-url` (authed) returns
+  the eBay authorize URL; the SPA redirects the browser to it. The user id is
+  embedded in a short-lived **signed** `state` token (the callback has no
+  session, so the id must be tamper-proof). `GET /api/ebay/callback` (public)
+  is the **"auth accepted URL"** registered against the RuName — it verifies
+  the state, exchanges the code for tokens, upserts `ebay_tokens`, and
+  redirects back to `FRONTEND_URL/ebay-connect?success=true` (or `?error=...`).
+  Register `<public-backend-url>/api/ebay/callback` in the eBay Developer
+  Portal; for local testing use a Cloudflare Tunnel hostname.
 
 ## Suggested order
 
