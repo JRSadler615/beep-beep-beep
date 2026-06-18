@@ -26,20 +26,22 @@ npm run dev            # http://localhost:3000, proxies /api -> :8000
 
 ## Migration status
 
-**Done (foundation + auth):**
+**Done:**
 - Vite + React 19 + TS + Tailwind v4 scaffold
 - Router, app shell, `ProtectedRoute` session gate
 - `AuthContext` (Supabase) replacing `next-auth`
-- `lib/api.ts` — fetch wrapper that attaches the Supabase bearer token
-- Ported pages: Home, Login, Signup
+- `lib/api.ts` — `apiFetch` (parsed + throwing) and `apiRequest` (raw
+  `Response`), both attaching the Supabase bearer token
+- `lib/keyword-masker.ts` and `components/ProductSearchCard.tsx` ported
+- **All pages ported:** Home, Login, Signup, Dashboard, EbayConnect,
+  ProductSearch, Settings
 
-**Pending port** (currently `PortPending` placeholders):
-- `Dashboard`     ← `app/dashboard/page.tsx` (71 lines)
-- `EbayConnect`   ← `app/ebay-connect/page.tsx` (211)
-- `ProductSearch` ← `app/product-search/page.tsx` (2342)
-- `Settings`      ← `app/settings/page.tsx` (1440)
-
-Also pending: port `lib/keyword-masker.ts` and `components/ProductSearchCard.tsx`.
+**Notes:**
+- Every ported page calls `/api/*` endpoints that must be implemented in the
+  FastAPI backend (the Next.js `app/api/**` route handlers are the spec).
+- `noUnusedLocals` / `noUnusedParameters` are temporarily off in
+  `tsconfig.json` because the ported ProductSearch page carries orphaned
+  handlers from the original. Re-enable after cleanup.
 
 ## Transform rules (Next.js page → SPA page)
 

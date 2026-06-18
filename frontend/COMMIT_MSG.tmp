@@ -1,0 +1,20 @@
+Port remaining pages to the Vite SPA
+
+Port Dashboard, EbayConnect, ProductSearch, and Settings from the Next.js
+app, plus the keyword-masker lib and ProductSearchCard component. Replaces
+the PortPending placeholders. Build is clean (tsc + vite build).
+
+Transforms applied per the README rules:
+- Drop "use client"; Next Link -> react-router Link (href -> to)
+- useRouter/useSession/Navigation removed (ProtectedRoute supplies the shell)
+- Dashboard converted from a server component to a client component using
+  useAuth + apiFetch (was a direct Prisma query)
+- Data calls go through lib/api: apiFetch (parsed/throwing) and a new
+  apiRequest (raw Response) so ported res.ok/res.json flow is preserved;
+  both attach the Supabase bearer token
+- eBay OAuth connect uses a full-page redirect to the backend base URL
+
+Temporarily relaxed noUnusedLocals/noUnusedParameters for the verbatim port
+(ProductSearch has orphaned handlers in the original); to re-tighten later.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

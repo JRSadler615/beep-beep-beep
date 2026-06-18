@@ -52,6 +52,32 @@ export async function apiFetch<T = unknown>(
   return body as T
 }
 
+/**
+ * Lower-level variant that returns the raw Response (with the API base URL
+ * applied and the Supabase bearer token attached). Use when call sites need
+ * to inspect `res.ok` / `res.status` and parse the body themselves — this
+ * lets ported Next.js code keep its original `const res = await fetch(...)`
+ * control flow unchanged.
+ */
+export async function apiRequest(
+  path: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+
+  const headers = new Headers(options.headers)
+  if (!headers.has("Content-Type") && options.body) {
+    headers.set("Content-Type", "application/json")
+  }
+  if (session?.access_token) {
+    headers.set("Authorization", `Bearer ${session.access_token}`)
+  }
+
+  return fetch(`${API_BASE}${path}`, { ...options, headers })
+}
+
 export class ApiError extends Error {
   status: number
   body: unknown
