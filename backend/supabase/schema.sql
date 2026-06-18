@@ -1,0 +1,157 @@
+-- Beep Beep — Supabase schema
+-- Translated from the Prisma schema (prisma/schema.prisma).
+--
+-- Differences from Prisma:
+--   * User/Account/Session/VerificationToken are dropped — Supabase GoTrue
+--     (auth.users) owns identity now. Every table references auth.users(id).
+--   * Names are snake_case (what the FastAPI handlers query).
+--   * PKs are uuid (gen_random_uuid) instead of cuid text.
+--
+-- Apply via the Supabase SQL editor or `psql "$SUPABASE_DB_URL" -f schema.sql`.
+-- Safe to re-run (IF NOT EXISTS / OR REPLACE).
+
+-- updated_at auto-touch -------------------------------------------------------
+create or replace function public.set_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+-- Helper to attach the trigger ------------------------------------------------
+-- (Postgres has no "create trigger if not exists"; drop-then-create per table.)
+
+-- ebay_tokens -----------------------------------------------------------------
+create table if not exists public.ebay_tokens (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null unique references auth.users(id) on delete cascade,
+  access_token  text not null,
+  refresh_token text,
+  expires_at    timestamptz not null,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+-- sku_settings ----------------------------------------------------------------
+create table if not exists public.sku_settings (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid not null unique references auth.users(id) on delete cascade,
+  next_sku_counter integer not null default 1,
+  sku_prefix       text,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+-- ebay_business_policies ------------------------------------------------------
+create table if not exists public.ebay_business_policies (
+  id                      uuid primary key default gen_random_uuid(),
+  user_id                 uuid not null unique references auth.users(id) on delete cascade,
+  payment_policy_id       text,
+  payment_policy_name     text,
+  return_policy_id        text,
+  return_policy_name      text,
+  fulfillment_policy_id   text,
+  fulfillment_policy_name text,
+  created_at              timestamptz not null default now(),
+  updated_at              timestamptz not null default now()
+);
+
+-- banned_keywords -------------------------------------------------------------
+create table if not exists public.banned_keywords (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  keyword    text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, keyword)
+);
+create index if not exists banned_keywords_user_id_idx on public.banned_keywords (user_id);
+
+-- discount_settings -----------------------------------------------------------
+create table if not exists public.discount_settings (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null unique references auth.users(id) on delete cascade,
+  discount_amount double precision not null default 3.0,
+  minimum_price   double precision not null default 4.0,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
+-- override_description_settings -----------------------------------------------
+create table if not exists public.override_description_settings (
+  id                       uuid primary key default gen_random_uuid(),
+  user_id                  uuid not null unique references auth.users(id) on delete cascade,
+  use_override_description boolean not null default false,
+  override_description     text,
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now()
+);
+
+-- edit_mode_settings ----------------------------------------------------------
+create table if not exists public.edit_mode_settings (
+  id                uuid primary key default gen_random_uuid(),
+  user_id           uuid not null unique references auth.users(id) on delete cascade,
+  default_edit_mode boolean not null default false,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+-- seller_note_settings --------------------------------------------------------
+create table if not exists public.seller_note_settings (
+  id                          uuid primary key default gen_random_uuid(),
+  user_id                     uuid not null unique references auth.users(id) on delete cascade,
+  enable_seller_note_editing  boolean not null default false,
+  seller_note_text            text,
+  created_at                  timestamptz not null default now(),
+  updated_at                  timestamptz not null default now()
+);
+
+-- offer_settings --------------------------------------------------------------
+create table if not exists public.offer_settings (
+  id                   uuid primary key default gen_random_uuid(),
+  user_id              uuid not null unique references auth.users(id) on delete cascade,
+  allow_offers         boolean not null default false,
+  minimum_offer_amount double precision not null default 10.0,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
+);
+
+-- updated_at triggers ---------------------------------------------------------
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'ebay_tokens','sku_settings','ebay_business_policies','banned_keywords',
+    'discount_settings','override_description_settings','edit_mode_settings',
+    'seller_note_settings','offer_settings'
+  ] loop
+    execute format('drop trigger if exists set_updated_at on public.%I', t);
+    execute format(
+      'create trigger set_updated_at before update on public.%I
+       for each row execute function public.set_updated_at()', t);
+  end loop;
+end$$;
+
+-- Row-Level Security ----------------------------------------------------------
+-- The FastAPI backend uses the service-role key, which bypasses RLS; it scopes
+-- every query by user_id explicitly. These policies are defense-in-depth so
+-- that any access with the anon/user key (e.g. a direct Supabase client) can
+-- only ever touch the caller's own rows.
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'ebay_tokens','sku_settings','ebay_business_policies','banned_keywords',
+    'discount_settings','override_description_settings','edit_mode_settings',
+    'seller_note_settings','offer_settings'
+  ] loop
+    execute format('alter table public.%I enable row level security', t);
+    execute format('drop policy if exists owner_all on public.%I', t);
+    execute format(
+      'create policy owner_all on public.%I
+       for all to authenticated
+       using (user_id = auth.uid())
+       with check (user_id = auth.uid())', t);
+  end loop;
+end$$;

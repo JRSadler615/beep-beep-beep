@@ -1,11 +1,20 @@
 """User settings endpoints.
 
-`/api/settings/sku` is fully implemented as the reference pattern. The rest
-are stubs returning their default shape so the SPA renders; fill each in from
-the matching Next.js handler under `app/api/settings/**`.
+Ported from the Next.js handlers under `app/api/settings/**`. Response shapes
+(camelCase keys) match the originals exactly so the SPA needs no changes.
+
+DB columns are snake_case (see supabase/schema.sql); each handler maps between
+the two. The Supabase client uses the service role, so every query is scoped by
+`user_id` from the verified JWT.
+
+Note: the Next.js GETs auto-created a default row on first read. Here the GETs
+just return defaults without writing; the POST/save path upserts the row. The
+response is identical.
 """
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.auth import get_user_id
@@ -13,10 +22,34 @@ from app.db import supabase
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
+DEFAULT_SELLER_NOTE = (
+    "Please note: any mention of a digital copy or code may be expired and/or "
+    "unavailable. This does not affect the quality or functionality of the DVD."
+)
+
+
+def _fetch_one(table: str, user_id: str) -> Optional[dict]:
+    """Return the user's single row for a settings table, or None."""
+    res = (
+        supabase.table(table)
+        .select("*")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+def _upsert(table: str, user_id: str, values: dict) -> dict:
+    """Upsert the user's row (one row per user, conflict on user_id)."""
+    payload = {"user_id": user_id, **values}
+    res = supabase.table(table).upsert(payload, on_conflict="user_id").execute()
+    return (res.data or [payload])[0]
+
 
 # ---------------------------------------------------------------------------
-# SKU settings — fully implemented reference
-# Spec: app/api/settings/sku/route.ts (GET), sku/counter, sku/prefix (POST)
+# SKU settings
 # ---------------------------------------------------------------------------
 
 
@@ -25,83 +58,351 @@ class SkuCounterUpdate(BaseModel):
 
 
 class SkuPrefixUpdate(BaseModel):
-    skuPrefix: str | None
+    skuPrefix: Optional[str] = None
 
 
 @router.get("/sku")
 def get_sku(user_id: str = Depends(get_user_id)):
-    row = (
-        supabase.table("sku_settings")
-        .select("*")
-        .eq("user_id", user_id)
-        .maybe_single()
-        .execute()
-    )
-    data = row.data if row else None
-    if not data:
+    row = _fetch_one("sku_settings", user_id)
+    if not row:
         return {"nextSkuCounter": 1, "skuPrefix": None}
-    return {"nextSkuCounter": data["next_sku_counter"], "skuPrefix": data["sku_prefix"]}
+    return {"nextSkuCounter": row["next_sku_counter"], "skuPrefix": row["sku_prefix"]}
 
 
 @router.post("/sku/counter")
 def set_sku_counter(body: SkuCounterUpdate, user_id: str = Depends(get_user_id)):
-    supabase.table("sku_settings").upsert(
-        {"user_id": user_id, "next_sku_counter": body.nextSkuCounter}
-    ).execute()
-    return {"success": True, "nextSkuCounter": body.nextSkuCounter}
+    if body.nextSkuCounter < 1:
+        raise HTTPException(status_code=400, detail="nextSkuCounter must be >= 1")
+    row = _upsert("sku_settings", user_id, {"next_sku_counter": body.nextSkuCounter})
+    return {"success": True, "nextSkuCounter": row["next_sku_counter"]}
 
 
 @router.post("/sku/prefix")
 def set_sku_prefix(body: SkuPrefixUpdate, user_id: str = Depends(get_user_id)):
-    supabase.table("sku_settings").upsert(
-        {"user_id": user_id, "sku_prefix": body.skuPrefix}
-    ).execute()
-    return {"success": True, "skuPrefix": body.skuPrefix}
+    prefix = body.skuPrefix.strip() if body.skuPrefix else None
+    row = _upsert("sku_settings", user_id, {"sku_prefix": prefix})
+    return {"success": True, "skuPrefix": row["sku_prefix"]}
 
 
 # ---------------------------------------------------------------------------
-# Stubs — return the default shape the SPA expects. Implement from the
-# corresponding Next.js route handler. Each reads/writes one settings table.
+# Banned keywords
 # ---------------------------------------------------------------------------
+
+
+class KeywordCreate(BaseModel):
+    keyword: str
 
 
 @router.get("/banned-keywords")
 def get_banned_keywords(user_id: str = Depends(get_user_id)):
-    # TODO: select id, keyword from banned_keywords where user_id
-    return {"keywords": []}
+    res = (
+        supabase.table("banned_keywords")
+        .select("id, keyword, created_at")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return {
+        "keywords": [
+            {"id": k["id"], "keyword": k["keyword"], "createdAt": k["created_at"]}
+            for k in (res.data or [])
+        ]
+    }
+
+
+@router.post("/banned-keywords")
+def add_banned_keyword(body: KeywordCreate, user_id: str = Depends(get_user_id)):
+    if not body.keyword or not body.keyword.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Keyword is required and must be a non-empty string",
+        )
+    keyword = body.keyword.strip().lower()
+
+    existing = (
+        supabase.table("banned_keywords")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("keyword", keyword)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        raise HTTPException(status_code=400, detail="This keyword is already banned")
+
+    res = (
+        supabase.table("banned_keywords")
+        .insert({"user_id": user_id, "keyword": keyword})
+        .execute()
+    )
+    row = res.data[0]
+    return {
+        "success": True,
+        "keyword": {
+            "id": row["id"],
+            "keyword": row["keyword"],
+            "createdAt": row["created_at"],
+        },
+    }
+
+
+@router.delete("/banned-keywords")
+def delete_banned_keyword(id: str = Query(...), user_id: str = Depends(get_user_id)):
+    existing = (
+        supabase.table("banned_keywords").select("user_id").eq("id", id).limit(1).execute()
+    )
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Keyword not found")
+    if existing.data[0]["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    supabase.table("banned_keywords").delete().eq("id", id).execute()
+    return {"success": True, "message": "Keyword removed successfully"}
+
+
+# ---------------------------------------------------------------------------
+# Discount settings
+# ---------------------------------------------------------------------------
+
+
+class DiscountUpdate(BaseModel):
+    discountAmount: Optional[float] = None
+    minimumPrice: Optional[float] = None
 
 
 @router.get("/discount")
 def get_discount(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/settings/discount/route.ts
-    return {"discountAmount": 3.0, "minimumPrice": 4.0}
+    row = _fetch_one("discount_settings", user_id)
+    if not row:
+        return {"discountAmount": 3.0, "minimumPrice": 4.0}
+    return {"discountAmount": row["discount_amount"], "minimumPrice": row["minimum_price"]}
+
+
+@router.post("/discount")
+def set_discount(body: DiscountUpdate, user_id: str = Depends(get_user_id)):
+    values: dict = {}
+    if body.discountAmount is not None:
+        if body.discountAmount < 0:
+            raise HTTPException(status_code=400, detail="Discount amount cannot be negative")
+        values["discount_amount"] = body.discountAmount
+    if body.minimumPrice is not None:
+        if body.minimumPrice < 0:
+            raise HTTPException(status_code=400, detail="Minimum price cannot be negative")
+        values["minimum_price"] = body.minimumPrice
+
+    existing = _fetch_one("discount_settings", user_id) or {}
+    row = _upsert(
+        "discount_settings",
+        user_id,
+        {
+            "discount_amount": values.get("discount_amount", existing.get("discount_amount", 3.0)),
+            "minimum_price": values.get("minimum_price", existing.get("minimum_price", 4.0)),
+        },
+    )
+    return {
+        "success": True,
+        "discountAmount": row["discount_amount"],
+        "minimumPrice": row["minimum_price"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Edit mode settings
+# ---------------------------------------------------------------------------
+
+
+class EditModeUpdate(BaseModel):
+    defaultEditMode: Optional[bool] = None
 
 
 @router.get("/edit-mode")
 def get_edit_mode(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/settings/edit-mode/route.ts
-    return {"defaultEditMode": False}
+    row = _fetch_one("edit_mode_settings", user_id)
+    return {"defaultEditMode": row["default_edit_mode"] if row else False}
+
+
+@router.post("/edit-mode")
+def set_edit_mode(body: EditModeUpdate, user_id: str = Depends(get_user_id)):
+    value = body.defaultEditMode if body.defaultEditMode is not None else False
+    row = _upsert("edit_mode_settings", user_id, {"default_edit_mode": value})
+    return {"success": True, "defaultEditMode": row["default_edit_mode"]}
+
+
+# ---------------------------------------------------------------------------
+# Override description settings
+# ---------------------------------------------------------------------------
+
+
+class OverrideDescriptionUpdate(BaseModel):
+    useOverrideDescription: Optional[bool] = None
+    overrideDescription: Optional[str] = None
 
 
 @router.get("/override-description")
 def get_override_description(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/settings/override-description/route.ts
-    return {"useOverrideDescription": False, "overrideDescription": ""}
+    row = _fetch_one("override_description_settings", user_id)
+    if not row:
+        return {"useOverrideDescription": False, "overrideDescription": ""}
+    return {
+        "useOverrideDescription": row["use_override_description"],
+        "overrideDescription": row["override_description"] or "",
+    }
+
+
+@router.post("/override-description")
+def set_override_description(
+    body: OverrideDescriptionUpdate, user_id: str = Depends(get_user_id)
+):
+    existing = _fetch_one("override_description_settings", user_id) or {}
+    use_override = (
+        body.useOverrideDescription
+        if body.useOverrideDescription is not None
+        else existing.get("use_override_description", False)
+    )
+    description = (
+        (body.overrideDescription or None)
+        if body.overrideDescription is not None
+        else existing.get("override_description")
+    )
+    row = _upsert(
+        "override_description_settings",
+        user_id,
+        {"use_override_description": use_override, "override_description": description},
+    )
+    return {
+        "success": True,
+        "useOverrideDescription": row["use_override_description"],
+        "overrideDescription": row["override_description"] or "",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Seller note settings
+# ---------------------------------------------------------------------------
+
+
+class SellerNoteUpdate(BaseModel):
+    enableSellerNoteEditing: Optional[bool] = None
+    sellerNoteText: Optional[str] = None
 
 
 @router.get("/seller-note")
 def get_seller_note(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/settings/seller-note/route.ts
-    return {"enableSellerNoteEditing": False, "sellerNoteText": ""}
+    row = _fetch_one("seller_note_settings", user_id)
+    if not row:
+        return {"enableSellerNoteEditing": False, "sellerNoteText": DEFAULT_SELLER_NOTE}
+    return {
+        "enableSellerNoteEditing": row["enable_seller_note_editing"],
+        "sellerNoteText": row["seller_note_text"] or DEFAULT_SELLER_NOTE,
+    }
+
+
+@router.post("/seller-note")
+def set_seller_note(body: SellerNoteUpdate, user_id: str = Depends(get_user_id)):
+    existing = _fetch_one("seller_note_settings", user_id) or {}
+    enabled = (
+        body.enableSellerNoteEditing
+        if body.enableSellerNoteEditing is not None
+        else existing.get("enable_seller_note_editing", False)
+    )
+    if body.sellerNoteText is not None:
+        text = body.sellerNoteText.strip() or DEFAULT_SELLER_NOTE
+    else:
+        text = existing.get("seller_note_text") or DEFAULT_SELLER_NOTE
+    row = _upsert(
+        "seller_note_settings",
+        user_id,
+        {"enable_seller_note_editing": enabled, "seller_note_text": text},
+    )
+    return {
+        "success": True,
+        "enableSellerNoteEditing": row["enable_seller_note_editing"],
+        "sellerNoteText": row["seller_note_text"] or DEFAULT_SELLER_NOTE,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Offer settings
+# ---------------------------------------------------------------------------
+
+
+class OfferUpdate(BaseModel):
+    allowOffers: Optional[bool] = None
+    minimumOfferAmount: Optional[float] = None
 
 
 @router.get("/offers")
 def get_offers(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/settings/offers/route.ts
-    return {"allowOffers": False, "minimumOfferAmount": 10.0}
+    row = _fetch_one("offer_settings", user_id)
+    if not row:
+        return {"allowOffers": False, "minimumOfferAmount": 10.0}
+    return {
+        "allowOffers": row["allow_offers"],
+        "minimumOfferAmount": row["minimum_offer_amount"],
+    }
+
+
+@router.post("/offers")
+def set_offers(body: OfferUpdate, user_id: str = Depends(get_user_id)):
+    if body.minimumOfferAmount is not None and body.minimumOfferAmount <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="minimumOfferAmount must be a valid number greater than 0",
+        )
+    existing = _fetch_one("offer_settings", user_id) or {}
+    allow = body.allowOffers if body.allowOffers is not None else existing.get("allow_offers", False)
+    minimum = (
+        body.minimumOfferAmount
+        if body.minimumOfferAmount is not None
+        else existing.get("minimum_offer_amount", 10.0)
+    )
+    row = _upsert(
+        "offer_settings",
+        user_id,
+        {"allow_offers": allow, "minimum_offer_amount": minimum},
+    )
+    return {
+        "success": True,
+        "allowOffers": row["allow_offers"],
+        "minimumOfferAmount": row["minimum_offer_amount"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# eBay business policy preferences
+# ---------------------------------------------------------------------------
+
+
+class EbayPoliciesUpdate(BaseModel):
+    paymentPolicyId: Optional[str] = None
+    paymentPolicyName: Optional[str] = None
+    returnPolicyId: Optional[str] = None
+    returnPolicyName: Optional[str] = None
+    fulfillmentPolicyId: Optional[str] = None
+    fulfillmentPolicyName: Optional[str] = None
+
+
+_POLICY_FIELDS = {
+    "paymentPolicyId": "payment_policy_id",
+    "paymentPolicyName": "payment_policy_name",
+    "returnPolicyId": "return_policy_id",
+    "returnPolicyName": "return_policy_name",
+    "fulfillmentPolicyId": "fulfillment_policy_id",
+    "fulfillmentPolicyName": "fulfillment_policy_name",
+}
+
+
+def _policies_response(row: Optional[dict]) -> dict:
+    return {camel: (row.get(col) if row else None) for camel, col in _POLICY_FIELDS.items()}
 
 
 @router.get("/ebay-policies")
 def get_ebay_policies(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/settings/ebay-policies/route.ts
-    return {"paymentPolicyId": "", "returnPolicyId": "", "fulfillmentPolicyId": ""}
+    return _policies_response(_fetch_one("ebay_business_policies", user_id))
+
+
+@router.post("/ebay-policies")
+def set_ebay_policies(body: EbayPoliciesUpdate, user_id: str = Depends(get_user_id)):
+    values = {col: getattr(body, camel) for camel, col in _POLICY_FIELDS.items()}
+    row = _upsert("ebay_business_policies", user_id, values)
+    return {"success": True, **_policies_response(row)}
