@@ -15,7 +15,9 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = ""
     SUPABASE_JWT_SECRET: str = ""
 
-    # CORS / redirects
+    # CORS / redirects.
+    # PROD HOSTNAME: override via env (FRONTEND_URL) to the deployed SPA origin
+    # in production; this localhost default is for local dev only.
     FRONTEND_URL: str = "http://localhost:3000"
 
     # eBay

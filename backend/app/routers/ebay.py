@@ -114,6 +114,12 @@ def connect_url(user_id: str = Depends(get_user_id)):
 
 
 @router.get("/callback")
+# PROD HOSTNAME: this endpoint's PUBLIC URL is the eBay RuName "auth accepted
+# URL". It must be registered in the eBay Developer Portal and matches the
+# backend's public host: the Cloudflare Tunnel host in dev, the production
+# backend domain (e.g. https://api.jrsadler.com/api/ebay/callback) in prod.
+# The hostname is not referenced here — only registered with eBay — but it
+# changes per environment, so update the portal when the backend host changes.
 async def callback(
     code: str | None = Query(None),
     state: str | None = Query(None),
