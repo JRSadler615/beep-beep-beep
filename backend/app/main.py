@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import ebay, settings as settings_router
+from app.routers import catalog, ebay, settings as settings_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -25,6 +25,7 @@ app.add_middleware(
 
 app.include_router(ebay.router)
 app.include_router(settings_router.router)
+app.include_router(catalog.router)
 
 
 @app.get("/health")
