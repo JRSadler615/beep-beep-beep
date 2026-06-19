@@ -163,6 +163,10 @@ async def callback(
 
     if resp.status_code >= 400:
         body = resp.text
+        # Log eBay's actual error (no token is present on failure, so this is
+        # safe). 401 here = invalid_client (bad client_id/secret); a
+        # redirect_uri complaint = the RuName / accepted-URL mismatch.
+        print(f"[eBay OAuth] token exchange failed: {resp.status_code} {body}")
         kind = "token_exchange_failed"
         if "redirect_uri" in body:
             kind = "redirect_uri_mismatch"
