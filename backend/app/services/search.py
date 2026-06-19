@@ -12,6 +12,7 @@ import re
 import httpx
 
 from app.config import settings
+from app.services.catalog import lookup_dvd_by_upc
 from app.services.ebay_client import EbayTokenError, debug_log, get_valid_ebay_token
 
 
@@ -76,12 +77,19 @@ async def search_product(
     }
 
     is_upc = search_type == "upc"
-    # Browse API: `gtin` is an exact-match filter; `q` is fuzzy keyword search.
-    browse_params = (
-        {"gtin": value, "fieldgroups": "EXTENDED"}
-        if is_upc
-        else {"q": value, "fieldgroups": "EXTENDED"}
-    )
+
+    # Step 1: for UPC searches, check the local DVD catalog first.
+    catalog = lookup_dvd_by_upc(value) if is_upc else None
+
+    # Step 2: choose the eBay query used to gather price comps + a photo.
+    # On a catalog hit we search by the known Title (keyword) — far more
+    # reliable for used DVDs than an exact GTIN match, which is often untagged.
+    if catalog and catalog.get("title"):
+        browse_params = {"q": catalog["title"], "fieldgroups": "EXTENDED"}
+    elif is_upc:
+        browse_params = {"gtin": value, "fieldgroups": "EXTENDED"}
+    else:
+        browse_params = {"q": value, "fieldgroups": "EXTENDED"}
 
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
@@ -101,7 +109,8 @@ async def search_product(
 
         data = r.json()
         items = data.get("itemSummaries") or []
-        if not items:
+
+        if not items and not catalog:
             msg = (
                 "No products found for this UPC code"
                 if is_upc
@@ -109,26 +118,34 @@ async def search_product(
             )
             return 404, {"error": msg}
 
-        # Mean price across the first 10 items that have a price
-        items_for_mean = items[:10]
-        prices = [
-            float(i["price"]["value"])
-            for i in items_for_mean
-            if i.get("price", {}).get("value")
-        ]
-        mean_price = f"{sum(prices) / len(prices):.2f}" if prices else "0.00"
-
-        # Pick a RANDOM item, but display the mean price
-        random_index = random.randrange(len(items))
-        selected = items[random_index]
-        product = {
-            **selected,
-            "price": {
-                **(selected.get("price") or {}),
-                "value": mean_price,
-                "currency": (selected.get("price") or {}).get("currency") or "USD",
-            },
-        }
+        if items:
+            # Mean price across the first 10 items that have a price
+            items_for_mean = items[:10]
+            prices = [
+                float(i["price"]["value"])
+                for i in items_for_mean
+                if i.get("price", {}).get("value")
+            ]
+            mean_price = f"{sum(prices) / len(prices):.2f}" if prices else "0.00"
+            random_index = random.randrange(len(items))
+            selected = items[random_index]
+            product = {
+                **selected,
+                "price": {
+                    **(selected.get("price") or {}),
+                    "value": mean_price,
+                    "currency": (selected.get("price") or {}).get("currency") or "USD",
+                },
+            }
+        else:
+            # Catalog hit but eBay returned no comps: still surface the item.
+            prices, mean_price, random_index, selected = [], "0.00", -1, {}
+            product = {
+                "title": catalog.get("title"),
+                "price": {"value": "0.00", "currency": "USD"},
+                "image": None,
+                "additionalImages": [],
+            }
 
         original_seller_image = product.get("image")
         original_seller_additional = product.get("additionalImages") or []
@@ -136,13 +153,15 @@ async def search_product(
         # Image enrichment: prefer a usable (>640px) Catalog stock image, else
         # fall back to the seller image. Never fatal — any failure keeps seller.
         try:
+            if catalog and catalog.get("title"):
+                cat_params = {"q": catalog["title"], "fieldgroups": "FULL"}
+            elif is_upc:
+                cat_params = {"gtin": value, "fieldgroups": "FULL"}
+            else:
+                cat_params = {"q": value, "fieldgroups": "FULL"}
             cat = await client.get(
                 f"{base}/commerce/catalog/v1_beta/product_summary/search",
-                params=(
-                    {"gtin": value, "fieldgroups": "FULL"}
-                    if is_upc
-                    else {"q": value, "fieldgroups": "FULL"}
-                ),
+                params=cat_params,
                 headers=browse_headers,
             )
             source = "seller_only"
@@ -178,6 +197,25 @@ async def search_product(
             debug_log("[IMAGE FETCH] exception:", e)
             product["_imageSources"] = {"source": "seller_only"}
 
+        # Structured DVD fields: from the catalog on a hit, else seed the
+        # description from eBay and leave the rest blank for the user to fill.
+        if catalog:
+            product["title"] = catalog.get("title") or product.get("title")
+            product["dvdFields"] = {k: (v or "") for k, v in catalog["fields"].items()}
+            product["fromCatalog"] = True
+        else:
+            ebay_desc = product.get("shortDescription") or product.get("description") or ""
+            product["dvdFields"] = {
+                "type": "",
+                "year": "",
+                "description": ebay_desc,
+                "publisher": "",
+                "genre": "",
+                "rated": "",
+                "length": "",
+            }
+            product["fromCatalog"] = False
+
         product["_searchMetadata"] = {
             "totalResults": len(items),
             "selectedIndex": random_index,
@@ -187,5 +225,6 @@ async def search_product(
             "meanPrice": mean_price,
             "searchQuery": value,
             "searchType": search_type,
+            "fromCatalog": bool(catalog),
         }
         return 200, product
