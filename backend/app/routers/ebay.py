@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 
 import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.auth import get_user_id
@@ -26,6 +26,8 @@ from app.services.ebay_client import (
     ebay_headers,
     get_valid_ebay_token,
 )
+from app.services.inventory import increase_inventory as _increase_inventory
+from app.services.listing import create_listing as _create_listing
 
 router = APIRouter(prefix="/api/ebay", tags=["ebay"])
 
@@ -446,13 +448,22 @@ async def validate_listing(
 
 
 @router.post("/list")
-async def list_item(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/ebay/list/route.ts (the big one — inventory item, offer,
-    # publish, atomic SKU claim, best-offer handling)
-    raise HTTPException(status_code=501, detail="list not implemented")
+async def list_item(request: Request, user_id: str = Depends(get_user_id)):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+    status_code, payload = await _create_listing(user_id, body)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 @router.post("/increase-inventory")
-async def increase_inventory(user_id: str = Depends(get_user_id)):
-    # TODO: app/api/ebay/increase-inventory/route.ts
-    raise HTTPException(status_code=501, detail="increase-inventory not implemented")
+async def increase_inventory(request: Request, user_id: str = Depends(get_user_id)):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status_code, payload = await _increase_inventory(
+        user_id, body.get("sku"), body.get("upc")
+    )
+    return JSONResponse(status_code=status_code, content=payload)

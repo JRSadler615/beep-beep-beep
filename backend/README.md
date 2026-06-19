@@ -36,15 +36,18 @@ The Vite dev server proxies `/api` to `:8000` (see frontend/vite.config.ts).
 - `app/auth.py` — Supabase JWT verification dependency
 - `app/services/ebay_client.py` — token refresh + headers
 
-**Stubbed** (return defaults or HTTP 501; implement from the Next.js handler
-named in each `# TODO`):
-- `/api/ebay/connect`, `/callback`, `/check-duplicate`, `/policies`,
-  `/validate-listing`, `/list`, `/increase-inventory`
-- `/api/settings/{banned-keywords,discount,edit-mode,override-description,
-  seller-note,offers,ebay-policies}`
+All endpoints are now implemented:
+- eBay: `connect-url`, `callback`, `check-connection`, `disconnect`, `search`,
+  `check-duplicate`, `policies`, `validate-listing`, `list`,
+  `increase-inventory`. The two heavy ones live in `app/services/`:
+  `listing.py` (create_listing) and `inventory.py` (increase_inventory).
+- Settings: all `sku`, `banned-keywords`, `discount`, `edit-mode`,
+  `override-description`, `seller-note`, `offers`, `ebay-policies`.
 
-The Next.js `app/api/**` route handlers at the repo root are the spec for
-request/response shapes and eBay logic.
+The Next.js `app/api/**` route handlers at the repo root remain the reference
+spec for request/response shapes and eBay logic. `list`/`increase-inventory`
+have not yet been exercised against a live published listing (requires a
+connected eBay account + the OAuth/tunnel setup).
 
 ## Design notes
 

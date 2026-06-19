@@ -133,6 +133,29 @@ begin
   end loop;
 end$$;
 
+-- Atomic SKU counter claim ----------------------------------------------------
+-- Replaces the Prisma "upsert with increment" so concurrent listing requests
+-- can never claim the same counter. Returns the value THIS caller claimed
+-- (post-increment minus one), plus the prefix. Called via supabase.rpc().
+create or replace function public.claim_sku_counter(p_user_id uuid)
+returns table(claimed_counter integer, prefix text)
+language plpgsql security definer as $$
+declare
+  v_counter integer;
+  v_prefix  text;
+begin
+  insert into public.sku_settings (user_id, next_sku_counter, sku_prefix)
+  values (p_user_id, 2, null)
+  on conflict (user_id)
+    do update set next_sku_counter = public.sku_settings.next_sku_counter + 1
+  returning next_sku_counter, sku_prefix into v_counter, v_prefix;
+
+  claimed_counter := v_counter - 1;   -- first insert -> 2-1 = 1
+  prefix := coalesce(v_prefix, 'SKU');
+  return next;
+end;
+$$;
+
 -- Row-Level Security ----------------------------------------------------------
 -- The FastAPI backend uses the service-role key, which bypasses RLS; it scopes
 -- every query by user_id explicitly. These policies are defense-in-depth so
