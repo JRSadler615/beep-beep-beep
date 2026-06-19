@@ -18,8 +18,11 @@ interface ProductData {
   [key: string]: any
 }
 
+type SearchType = "upc" | "title" | "any"
+
 export default function ProductSearch() {
   const [upc, setUpc] = useState("")
+  const [searchType, setSearchType] = useState<SearchType>("upc")
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
   const [isConnected, setIsConnected] = useState(false)
@@ -273,9 +276,11 @@ export default function ProductSearch() {
     loadSellerNoteEditingSettings()
   }, [])
 
-  const performSearch = async (searchValue: string) => {
+  const performSearch = async (searchValue: string, typeOverride?: SearchType) => {
     const trimmedUpc = searchValue.trim()
-    
+    // Scanner forces a UPC search; the form uses the dropdown selection.
+    const effectiveType: SearchType = typeOverride || searchType
+
     setError("")
     setProductData(null)
     setInventoryMessage(null) // Clear any previous inventory success/error messages
@@ -289,7 +294,9 @@ export default function ProductSearch() {
     setLoading(true)
 
     try {
-      const res = await apiRequest(`/api/ebay/search?upc=${encodeURIComponent(trimmedUpc)}`)
+      const res = await apiRequest(
+        `/api/ebay/search?upc=${encodeURIComponent(trimmedUpc)}&searchType=${effectiveType}`
+      )
       const data = await res.json()
 
       if (!res.ok) {
@@ -331,10 +338,13 @@ export default function ProductSearch() {
       // Fetch SKU preview for this listing
       fetchSkuPreview()
       
-      // Check for duplicates in eBay inventory using the searched UPC
-      checkForDuplicates(trimmedUpc).catch(() => {
-        // Don't block the user if check fails
-      })
+      // Duplicate check matches inventory by UPC, so only run it for UPC
+      // searches — a title/keyword value isn't a UPC to match against.
+      if (effectiveType === "upc") {
+        checkForDuplicates(trimmedUpc).catch(() => {
+          // Don't block the user if check fails
+        })
+      }
     } catch (err: any) {
       setError(err.message || "Failed to search product")
     } finally {
@@ -1196,7 +1206,7 @@ export default function ProductSearch() {
                   stopScanner()
                   // Auto-trigger search after scanning
                   addDebugLog("🔍 Auto-triggering search...")
-                  performSearch(cleanedText)
+                  performSearch(cleanedText, "upc")
                 }, 500)
               } else {
                 // Not a valid UPC format, but still use it (might be EAN or other format)
@@ -1208,7 +1218,7 @@ export default function ProductSearch() {
                   stopScanner()
                   // Auto-trigger search after scanning
                   addDebugLog("🔍 Auto-triggering search...")
-                  performSearch(cleanedText)
+                  performSearch(cleanedText, "upc")
                 }, 500)
               }
             } catch (err: any) {
@@ -1521,6 +1531,16 @@ export default function ProductSearch() {
           <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-4 mb-4">
             <form onSubmit={handleSearch}>
               <div className="flex gap-3">
+                <select
+                  value={searchType}
+                  onChange={(e) => setSearchType(e.target.value as SearchType)}
+                  aria-label="Search type"
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                >
+                  <option value="upc">UPC</option>
+                  <option value="title">Title</option>
+                  <option value="any">Any value</option>
+                </select>
                 <input
                   ref={upcInputRef}
                   id="upc"
@@ -1528,13 +1548,21 @@ export default function ProductSearch() {
                   value={upc}
                   onChange={(e) => setUpc(e.target.value)}
                   onKeyDown={(e) => {
-                    // Handle spacebar in search input: if productData exists, list instead of typing space
-                    if (e.key === " " && productData && !listingLoading && !scannerActive && !showAspectForm) {
+                    // Spacebar quick-list shortcut: only in UPC mode, where the
+                    // search value never contains spaces. In title/any mode the
+                    // user needs to type spaces normally.
+                    if (e.key === " " && searchType === "upc" && productData && !listingLoading && !scannerActive && !showAspectForm) {
                       e.preventDefault()
                       handleListOnEbay()
                     }
                   }}
-                  placeholder="Enter UPC Code (e.g., 885909950805)"
+                  placeholder={
+                    searchType === "upc"
+                      ? "Enter UPC Code (e.g., 885909950805)"
+                      : searchType === "title"
+                        ? "Enter product title"
+                        : "Enter any search value"
+                  }
                   className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                   required
                 />

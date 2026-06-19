@@ -195,10 +195,16 @@ async def callback(
 
 
 @router.get("/search")
-async def search(upc: str = Query(...), user_id: str = Depends(get_user_id)):
-    """UPC product search. Returns the flattened single-product shape the SPA
-    expects (random result + mean price + enriched image)."""
-    status_code, payload = await _search_product(user_id, upc)
+async def search(
+    upc: str = Query(...),
+    searchType: str = Query("upc"),
+    user_id: str = Depends(get_user_id),
+):
+    """Product search. searchType: "upc" (exact GTIN), "title" or "any"
+    (keyword/approximate). Returns the flattened single-product shape the SPA
+    expects (random result + mean price + enriched image). The `upc` param
+    carries the search value for any type."""
+    status_code, payload = await _search_product(user_id, upc, searchType)
     return JSONResponse(status_code=status_code, content=payload)
 
 

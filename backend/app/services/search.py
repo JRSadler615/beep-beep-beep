@@ -51,7 +51,14 @@ def _high_res_image(image: dict | None) -> dict | None:
     return None
 
 
-async def search_product(user_id: str, upc: str) -> tuple[int, dict]:
+async def search_product(
+    user_id: str, value: str, search_type: str = "upc"
+) -> tuple[int, dict]:
+    """search_type:
+    - "upc":   exact GTIN match (Browse API `gtin` filter) — no fuzzy results.
+    - "title": keyword search (approximate).
+    - "any":   keyword search across all fields (approximate).
+    """
     try:
         access_token = await get_valid_ebay_token(user_id)
     except EbayTokenError as e:
@@ -68,10 +75,18 @@ async def search_product(user_id: str, upc: str) -> tuple[int, dict]:
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
     }
 
+    is_upc = search_type == "upc"
+    # Browse API: `gtin` is an exact-match filter; `q` is fuzzy keyword search.
+    browse_params = (
+        {"gtin": value, "fieldgroups": "EXTENDED"}
+        if is_upc
+        else {"q": value, "fieldgroups": "EXTENDED"}
+    )
+
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
             f"{base}/buy/browse/v1/item_summary/search",
-            params={"q": upc, "fieldgroups": "EXTENDED"},
+            params=browse_params,
             headers=browse_headers,
         )
         if r.status_code >= 400:
@@ -87,7 +102,12 @@ async def search_product(user_id: str, upc: str) -> tuple[int, dict]:
         data = r.json()
         items = data.get("itemSummaries") or []
         if not items:
-            return 404, {"error": "No products found for this UPC code"}
+            msg = (
+                "No products found for this UPC code"
+                if is_upc
+                else "No products found matching your search"
+            )
+            return 404, {"error": msg}
 
         # Mean price across the first 10 items that have a price
         items_for_mean = items[:10]
@@ -118,7 +138,11 @@ async def search_product(user_id: str, upc: str) -> tuple[int, dict]:
         try:
             cat = await client.get(
                 f"{base}/commerce/catalog/v1_beta/product_summary/search",
-                params={"q": upc, "fieldgroups": "FULL"},
+                params=(
+                    {"gtin": value, "fieldgroups": "FULL"}
+                    if is_upc
+                    else {"q": value, "fieldgroups": "FULL"}
+                ),
                 headers=browse_headers,
             )
             source = "seller_only"
@@ -161,6 +185,7 @@ async def search_product(user_id: str, upc: str) -> tuple[int, dict]:
             "isMeanPrice": True,
             "originalPrice": (selected.get("price") or {}).get("value"),
             "meanPrice": mean_price,
-            "searchQuery": upc,
+            "searchQuery": value,
+            "searchType": search_type,
         }
         return 200, product
