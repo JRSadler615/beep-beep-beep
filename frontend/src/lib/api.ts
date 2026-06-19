@@ -68,7 +68,12 @@ export async function apiRequest(
   } = await supabase.auth.getSession()
 
   const headers = new Headers(options.headers)
-  if (!headers.has("Content-Type") && options.body) {
+  // Don't force JSON for FormData — the browser must set the multipart boundary.
+  if (
+    !headers.has("Content-Type") &&
+    options.body &&
+    !(options.body instanceof FormData)
+  ) {
     headers.set("Content-Type", "application/json")
   }
   if (session?.access_token) {

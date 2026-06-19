@@ -42,6 +42,15 @@ export default function ProductSearch() {
   const [editedDescription, setEditedDescription] = useState("")
   const [editedCondition, setEditedCondition] = useState("")
   const [editedPrice, setEditedPrice] = useState("")
+  // DVD catalog detail fields (combined into the eBay listing description)
+  const [dvdType, setDvdType] = useState("")
+  const [dvdYear, setDvdYear] = useState("")
+  const [dvdPublisher, setDvdPublisher] = useState("")
+  const [dvdGenre, setDvdGenre] = useState("")
+  const [dvdRated, setDvdRated] = useState("")
+  const [dvdLength, setDvdLength] = useState("")
+  const [isDvd, setIsDvd] = useState(false)
+  const [uploadingPhoto, setUploadingPhoto] = useState(false)
   
   // Listing state
   const [listingLoading, setListingLoading] = useState(false)
@@ -327,7 +336,21 @@ export default function ProductSearch() {
       // If override description is enabled, start with empty description so user can type their own
       // Otherwise, populate from product data
       // Note: If user has previously saved an override description, it will be in productData and will be preserved when they edit again
-      setEditedDescription(useOverrideDescription ? "" : (data.shortDescription || data.description || ""))
+      // Populate DVD detail fields from the catalog (or eBay for the description)
+      const dvd = data.dvdFields || {}
+      setDvdType(dvd.type || "")
+      setDvdYear(dvd.year || "")
+      setDvdPublisher(dvd.publisher || "")
+      setDvdGenre(dvd.genre || "")
+      setDvdRated(dvd.rated || "")
+      setDvdLength(dvd.length || "")
+      // Came from the catalog -> it's a known DVD; pre-check the box.
+      setIsDvd(!!data.fromCatalog)
+      setEditedDescription(
+        useOverrideDescription
+          ? ""
+          : (dvd.description || data.shortDescription || data.description || "")
+      )
       setEditedCondition(defaultCondition)
       setEditedPrice(data.price?.value || "0.00")
       setIsMeanPrice(data._searchMetadata?.isMeanPrice || false)
@@ -441,10 +464,82 @@ export default function ProductSearch() {
     setDuplicateCheckComplete(false) // Clear duplicate check status
     setInventoryMessage(null) // Clear inventory increase message
 
+    // Clear DVD detail fields too
+    setDvdType("")
+    setDvdYear("")
+    setDvdPublisher("")
+    setDvdGenre("")
+    setDvdRated("")
+    setDvdLength("")
+    setIsDvd(false)
+
     // After clearing, refocus UPC input so the next barcode scan goes straight into it
     if (upcInputRef.current) {
       upcInputRef.current.focus()
       upcInputRef.current.select()
+    }
+  }
+
+  // Combine the structured DVD fields + description into the labeled HTML block
+  // sent as the eBay listing description.
+  const buildCombinedDescription = (): string => {
+    const rows: string[] = []
+    if (dvdType.trim()) rows.push(`<b>Type:</b> ${dvdType.trim()}`)
+    if (dvdYear.trim()) rows.push(`<b>Year:</b> ${dvdYear.trim()}`)
+    if (dvdPublisher.trim()) rows.push(`<b>Publisher:</b> ${dvdPublisher.trim()}`)
+    if (dvdGenre.trim()) rows.push(`<b>Genre:</b> ${dvdGenre.trim()}`)
+    if (dvdRated.trim()) rows.push(`<b>Rated:</b> ${dvdRated.trim()}`)
+    if (dvdLength.trim()) rows.push(`<b>Length:</b> ${dvdLength.trim()}`)
+    const header = rows.join("<br>\n")
+    const desc = (editedDescription || "").trim()
+    if (!header) return desc
+    return desc ? `${header}<br><br>\n${desc}` : header
+  }
+
+  // Upload a photo to Supabase Storage and use it as the listing image.
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !productData) return
+    setUploadingPhoto(true)
+    setListingError(null)
+    try {
+      const form = new FormData()
+      form.append("file", file)
+      const res = await apiRequest("/api/upload-photo", { method: "POST", body: form })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Photo upload failed")
+      setProductData({ ...productData, image: { imageUrl: data.url } })
+    } catch (err: any) {
+      setListingError(err.message || "Photo upload failed")
+    } finally {
+      setUploadingPhoto(false)
+      e.target.value = "" // allow re-selecting the same file
+    }
+  }
+
+  // Save the current item to the DVD catalog ("This is a DVD").
+  const saveToDvdCatalog = async () => {
+    const catalogUpc = (upc || productData?.gtin || "").trim()
+    const title = (editedTitle || productData?.title || "").trim()
+    if (!catalogUpc || !title) return
+    try {
+      await apiRequest("/api/catalog/dvd", {
+        method: "POST",
+        body: JSON.stringify({
+          upc: catalogUpc,
+          title,
+          type: dvdType,
+          year: dvdYear,
+          description: editedDescription,
+          publisher: dvdPublisher,
+          genre: dvdGenre,
+          rated: dvdRated,
+          length: dvdLength,
+          images: productData?.image?.imageUrl || null,
+        }),
+      })
+    } catch {
+      // Non-fatal: don't block listing if the catalog write fails
     }
   }
   
@@ -708,14 +803,15 @@ export default function ProductSearch() {
         // Universal override is enabled and has content - use it
         descriptionToSend = universalOverrideDescription
         descriptionSource = "UNIVERSAL_OVERRIDE"
-      } else if (editedDescription && editedDescription.trim().length > 0) {
-        // User manually edited the description - use that
-        descriptionToSend = editedDescription
-        descriptionSource = "USER_EDITED"
       } else {
-        // Fall back to eBay product description
-        descriptionToSend = productData.shortDescription || productData.description || ""
-        descriptionSource = "EBAY_DEFAULT"
+        // Combine the structured DVD fields + description into the labeled
+        // HTML block. Falls back to the eBay description if all are empty.
+        descriptionToSend =
+          buildCombinedDescription() ||
+          productData.shortDescription ||
+          productData.description ||
+          ""
+        descriptionSource = "COMBINED_DVD_FIELDS"
       }
       
       console.log("[FRONTEND DEBUG] Listing to eBay - Final Description Decision:", JSON.stringify({
@@ -918,6 +1014,10 @@ export default function ProductSearch() {
       setUserProvidedAspects({})
       
       setListingSuccess(data.listingUrl || data.message || "Product listed successfully!")
+      // If marked as a DVD, save/update the catalog with these details
+      if (isDvd) {
+        saveToDvdCatalog().catch(() => {})
+      }
       // Capture the SKU that was used for this listing and calculate next SKU
       if (data.sku) {
         setListedSku(data.sku)
@@ -2020,6 +2120,61 @@ export default function ProductSearch() {
                         )}
                       </div>
                     )}
+
+                    {/* DVD Details - structured fields combined into the listing description */}
+                    <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400">DVD Details</h3>
+                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={isDvd}
+                            onChange={(e) => setIsDvd(e.target.checked)}
+                            className="rounded border-gray-300 dark:border-gray-600"
+                          />
+                          This is a DVD
+                        </label>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {([
+                          ["Type", dvdType, setDvdType],
+                          ["Year", dvdYear, setDvdYear],
+                          ["Publisher", dvdPublisher, setDvdPublisher],
+                          ["Genre", dvdGenre, setDvdGenre],
+                          ["Rated", dvdRated, setDvdRated],
+                          ["Length", dvdLength, setDvdLength],
+                        ] as [string, string, (v: string) => void][]).map(([label, val, setter]) => (
+                          <input
+                            key={label}
+                            type="text"
+                            value={val}
+                            onChange={(e) => setter(e.target.value)}
+                            placeholder={label}
+                            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                          />
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                        These combine with the description into the eBay listing. "This is a DVD" saves them to the catalog on listing.
+                      </p>
+                    </div>
+
+                    {/* Manual photo upload */}
+                    <div>
+                      <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Listing Photo</h3>
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handlePhotoUpload}
+                          disabled={uploadingPhoto}
+                          className="text-sm text-gray-700 dark:text-gray-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:bg-blue-600 file:text-white file:cursor-pointer hover:file:bg-blue-700 disabled:opacity-50"
+                        />
+                        {uploadingPhoto && (
+                          <span className="text-sm text-gray-500 dark:text-gray-400">Uploading…</span>
+                        )}
+                      </div>
+                    </div>
 
                     {/* Price - Editable */}
                     {productData.price && (() => {
