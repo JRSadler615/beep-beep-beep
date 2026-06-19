@@ -28,6 +28,7 @@ from app.services.ebay_client import (
 )
 from app.services.inventory import increase_inventory as _increase_inventory
 from app.services.listing import create_listing as _create_listing
+from app.services.search import search_product as _search_product
 
 router = APIRouter(prefix="/api/ebay", tags=["ebay"])
 
@@ -195,24 +196,10 @@ async def callback(
 
 @router.get("/search")
 async def search(upc: str = Query(...), user_id: str = Depends(get_user_id)):
-    """Reference pattern for an authenticated eBay call. Spec:
-    app/api/ebay/search/route.ts (Browse API item_summary/search)."""
-    try:
-        access_token = await get_valid_ebay_token(user_id)
-    except EbayTokenError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.message)
-
-    url = f"{settings.ebay_base_url}/buy/browse/v1/item_summary/search"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            url,
-            params={"q": upc, "fieldgroups": "EXTENDED"},
-            headers=ebay_headers(access_token),
-        )
-    if resp.status_code >= 400:
-        raise HTTPException(status_code=resp.status_code, detail="Failed to search eBay")
-    # TODO: port the mean-price + image-enrichment logic from search/route.ts
-    return resp.json()
+    """UPC product search. Returns the flattened single-product shape the SPA
+    expects (random result + mean price + enriched image)."""
+    status_code, payload = await _search_product(user_id, upc)
+    return JSONResponse(status_code=status_code, content=payload)
 
 
 def _normalize_upc(value: object) -> str:
