@@ -317,9 +317,9 @@ export default function ProductSearch() {
         if (data.needsReconnect) {
           setIsConnected(false)
         }
-        // Exact UPC search found nothing in the catalog or on eBay: drop into
-        // a blank manual-entry form instead of showing an error.
-        if (res.status === 404 && effectiveType === "upc") {
+        // No results in the selected category (catalog + eBay): drop into a
+        // blank manual-entry form with an "Item Not Found" warning.
+        if (res.status === 404) {
           setNoMatchWarning(true)
           setProductData({
             title: "",
@@ -331,7 +331,7 @@ export default function ProductSearch() {
           setEditedDescription("")
           setEditedCondition("Used - Very Good")
           setEditedPrice("")
-          setMediaType(searchMediaType || "DVD") // default to the searched type
+          setMediaType(searchMediaType) // reflect the searched media type
           setMediaYear("")
           setMediaPublisher("")
           setMediaGenre("")
@@ -513,12 +513,12 @@ export default function ProductSearch() {
   // sent as the eBay listing description.
   const buildCombinedDescription = (): string => {
     const rows: string[] = []
-    if (MediaType.trim()) rows.push(`<b>Type:</b> ${MediaType.trim()}`)
-    if (MediaYear.trim()) rows.push(`<b>Year:</b> ${MediaYear.trim()}`)
+    if (MediaType.trim()) rows.push(`<b>Media Type:</b> ${MediaType.trim()}`)
+    if (MediaYear.trim()) rows.push(`<b>Release Year:</b> ${MediaYear.trim()}`)
     if (MediaPublisher.trim()) rows.push(`<b>Publisher:</b> ${MediaPublisher.trim()}`)
     if (MediaGenre.trim()) rows.push(`<b>Genre:</b> ${MediaGenre.trim()}`)
-    if (MediaRated.trim()) rows.push(`<b>Rated:</b> ${MediaRated.trim()}`)
-    if (MediaLength.trim()) rows.push(`<b>Length:</b> ${MediaLength.trim()}`)
+    if (MediaRated.trim()) rows.push(`<b>Rating:</b> ${MediaRated.trim()}`)
+    if (MediaLength.trim()) rows.push(`<b>Run Time:</b> ${MediaLength.trim()}`)
     const header = rows.join("<br>\n")
     const desc = (editedDescription || "").trim()
     if (!header) return desc
@@ -1774,7 +1774,7 @@ export default function ProductSearch() {
 
             {noMatchWarning && (
               <div className="mt-4 p-4 bg-amber-100 dark:bg-amber-900/30 border border-amber-400 dark:border-amber-700 text-amber-800 dark:text-amber-300 rounded">
-                No exact UPC matches found on in-house catalog or eBay. Please fill out the boxes below or search again by title.
+                <span className="font-semibold">Item Not Found.</span> No results in the selected category. Fill out the fields below, or try a different search type or media type.
               </div>
             )}
 
@@ -2208,13 +2208,15 @@ export default function ProductSearch() {
                       <div className="grid grid-cols-2 gap-2">
                         {/* Type: drop-down -> sets the eBay category. Selecting DVD
                             runs the catalog check and populates from it. */}
+                        {/* Media Type: drop-down -> sets the eBay category.
+                            Selecting DVD runs the catalog check and populates. */}
                         <select
                           value={MediaType}
                           onChange={(e) => handleMediaTypeChange(e.target.value)}
-                          aria-label="Type"
+                          aria-label="Media Type"
                           className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
                         >
-                          <option value="">Type…</option>
+                          <option value="">Media Type</option>
                           <option value="DVD">DVD</option>
                           <option value="CD">CD</option>
                           <option value="VHS">VHS</option>
@@ -2222,19 +2224,18 @@ export default function ProductSearch() {
                           <option value="Other">Other</option>
                         </select>
                         {([
-                          ["Year", MediaYear, setMediaYear, "e.g. 2015"],
-                          ["Publisher", MediaPublisher, setMediaPublisher, "e.g. Sony Pictures"],
-                          ["Genre", MediaGenre, setMediaGenre, "e.g. Action, Suspense"],
-                          ["Rated", MediaRated, setMediaRated, "e.g. R"],
-                          ["Length", MediaLength, setMediaLength, "e.g. 01:39"],
-                        ] as [string, string, (v: string) => void, string][]).map(
-                          ([label, val, setter, example]) => (
+                          ["Release Year", MediaYear, setMediaYear],
+                          ["Genre", MediaGenre, setMediaGenre],
+                          ["Rating", MediaRated, setMediaRated],
+                          ["Run Time", MediaLength, setMediaLength],
+                        ] as [string, string, (v: string) => void][]).map(
+                          ([label, val, setter]) => (
                             <input
                               key={label}
                               type="text"
                               value={val}
                               onChange={(e) => setter(e.target.value)}
-                              placeholder={example}
+                              placeholder={label}
                               aria-label={label}
                               className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
                             />
