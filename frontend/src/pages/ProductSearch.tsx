@@ -23,6 +23,8 @@ type SearchType = "upc" | "title" | "any"
 export default function ProductSearch() {
   const [upc, setUpc] = useState("")
   const [searchType, setSearchType] = useState<SearchType>("upc")
+  // Media format to scope the search by (sticky across searches)
+  const [searchMediaType, setSearchMediaType] = useState("DVD")
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
   const [isConnected, setIsConnected] = useState(false)
@@ -306,7 +308,7 @@ export default function ProductSearch() {
 
     try {
       const res = await apiRequest(
-        `/api/ebay/search?upc=${encodeURIComponent(trimmedUpc)}&searchType=${effectiveType}`
+        `/api/ebay/search?upc=${encodeURIComponent(trimmedUpc)}&searchType=${effectiveType}&mediaType=${encodeURIComponent(searchMediaType)}`
       )
       const data = await res.json()
 
@@ -329,7 +331,7 @@ export default function ProductSearch() {
           setEditedDescription("")
           setEditedCondition("Used - Very Good")
           setEditedPrice("")
-          setMediaType("DVD") // manual UPC entry is presumably a DVD to catalog
+          setMediaType(searchMediaType || "DVD") // default to the searched type
           setMediaYear("")
           setMediaPublisher("")
           setMediaGenre("")
@@ -366,8 +368,8 @@ export default function ProductSearch() {
       // Note: If user has previously saved an override description, it will be in productData and will be preserved when they edit again
       // Populate DVD detail fields from the catalog (or eBay for the description)
       const Media = data.dvdFields || {}
-      // A catalog hit is a DVD; otherwise use the eBay/Media type if present.
-      setMediaType(data.fromCatalog ? "DVD" : (Media.type || ""))
+      // A catalog hit is a DVD; otherwise default to the searched media type.
+      setMediaType(data.fromCatalog ? "DVD" : (searchMediaType || Media.type || ""))
       setMediaYear(Media.year || "")
       setMediaPublisher(Media.publisher || "")
       setMediaGenre(Media.genre || "")
@@ -1692,6 +1694,18 @@ export default function ProductSearch() {
           <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-4 mb-4">
             <form onSubmit={handleSearch}>
               <div className="flex gap-3">
+                <select
+                  value={searchMediaType}
+                  onChange={(e) => setSearchMediaType(e.target.value)}
+                  aria-label="Media type"
+                  className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                >
+                  <option value="DVD">DVD</option>
+                  <option value="CD">CD</option>
+                  <option value="VHS">VHS</option>
+                  <option value="Cassette">Cassette</option>
+                  <option value="Other">Other</option>
+                </select>
                 <select
                   value={searchType}
                   onChange={(e) => setSearchType(e.target.value as SearchType)}

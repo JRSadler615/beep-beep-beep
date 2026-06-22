@@ -15,6 +15,15 @@ from app.config import settings
 from app.services.catalog import lookup_dvd_by_upc
 from app.services.ebay_client import EbayTokenError, debug_log, get_valid_ebay_token
 
+# Media type -> eBay leaf category id (mirrors the frontend map). Used to
+# scope the Browse search so results don't blend formats (e.g. CD vs DVD).
+MEDIA_CATEGORY_IDS = {
+    "DVD": "617",
+    "CD": "176984",
+    "Cassette": "176983",
+    "VHS": "309",
+}
+
 
 def _image_size_from_url(url: str | None) -> int:
     """Pixel size from an eBay image URL (/s-l640.jpg -> 640). 999 if no size
@@ -53,12 +62,15 @@ def _high_res_image(image: dict | None) -> dict | None:
 
 
 async def search_product(
-    user_id: str, value: str, search_type: str = "upc"
+    user_id: str, value: str, search_type: str = "upc", media_type: str = ""
 ) -> tuple[int, dict]:
     """search_type:
     - "upc":   exact GTIN match (Browse API `gtin` filter) — no fuzzy results.
     - "title": keyword search (approximate).
     - "any":   keyword search across all fields (approximate).
+
+    media_type ("DVD"/"CD"/"VHS"/"Cassette"/"Other"/"") scopes the eBay search
+    to that format's category and selects which in-house catalog to check.
     """
     try:
         access_token = await get_valid_ebay_token(user_id)
@@ -77,9 +89,12 @@ async def search_product(
     }
 
     is_upc = search_type == "upc"
+    category_id = MEDIA_CATEGORY_IDS.get(media_type)
 
-    # Step 1: for UPC searches, check the local DVD catalog first.
-    catalog = lookup_dvd_by_upc(value) if is_upc else None
+    # Step 1: check the local catalog. Only DVDs have a catalog today, so skip
+    # the lookup for explicitly non-DVD types (one less DB round-trip).
+    do_catalog = is_upc and media_type in ("", "DVD")
+    catalog = lookup_dvd_by_upc(value) if do_catalog else None
 
     # Step 2: choose the eBay query used to gather price comps + a photo.
     # On a catalog hit we search by the known Title (keyword) — far more
@@ -90,6 +105,10 @@ async def search_product(
         browse_params = {"gtin": value, "fieldgroups": "EXTENDED"}
     else:
         browse_params = {"q": value, "fieldgroups": "EXTENDED"}
+
+    # Scope to the media type's eBay category so results don't blend formats.
+    if category_id:
+        browse_params["category_ids"] = category_id
 
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.get(
