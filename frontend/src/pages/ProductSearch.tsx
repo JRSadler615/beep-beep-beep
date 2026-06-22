@@ -30,6 +30,8 @@ export default function ProductSearch() {
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState("")
   const [productData, setProductData] = useState<ProductData | null>(null)
+  // The photo the user picked (from candidates or upload); required to list
+  const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null)
   const [scannerActive, setScannerActive] = useState(false)
   const [scanningStatus, setScanningStatus] = useState("")
   const [debugLogs, setDebugLogs] = useState<string[]>([])
@@ -327,6 +329,7 @@ export default function ProductSearch() {
             image: undefined,
             additionalImages: [],
           })
+          setSelectedImageUrl(null)
           setEditedTitle("")
           setEditedDescription("")
           setEditedCondition("Used - Very Good")
@@ -356,6 +359,7 @@ export default function ProductSearch() {
       }
       
       setProductData(productDataWithDefaultCondition)
+      setSelectedImageUrl(null) // require an explicit photo choice before listing
       // Initialize editable fields with product data
       // Apply keyword removal to title
       const processedTitle = removeKeywords(data.title || "", bannedKeywords)
@@ -470,6 +474,7 @@ export default function ProductSearch() {
   const handleClearProduct = () => {
     // Clear all product-related state
     setProductData(null)
+    setSelectedImageUrl(null)
     setUpc("") // Clear UPC from search bar
     setEditedTitle("")
     setEditedDescription("")
@@ -571,6 +576,7 @@ export default function ProductSearch() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Photo upload failed")
       setProductData({ ...productData, image: { imageUrl: data.url } })
+      setSelectedImageUrl(data.url) // uploaded photo becomes the selection
     } catch (err: any) {
       setListingError(err.message || "Photo upload failed")
     } finally {
@@ -738,7 +744,13 @@ export default function ProductSearch() {
   
   const handleListOnEbay = async (additionalAspects?: Record<string, string>, bypassFloorWarning?: boolean) => {
     if (!productData) return
-    
+
+    // Require an explicit photo choice before listing
+    if (!selectedImageUrl) {
+      setListingError("Please select a photo (or upload one) before listing.")
+      return
+    }
+
     // Check if price hits floor and show warning dialog (unless bypassed)
     const listingPrice = editedPrice || productData.price?.value || "0.00"
     const priceInfo = calculateDiscountedPrice(listingPrice)
@@ -918,7 +930,7 @@ export default function ProductSearch() {
           conditionDescription: conditionDescriptionToSend,
           
           // Images - primary and additional
-          imageUrl: productData.image?.imageUrl || "",
+          imageUrl: selectedImageUrl || productData.image?.imageUrl || "",
           additionalImages: productData.additionalImages || [],
           
           // Category: prefer the eBay category mapped from the selected media
@@ -2053,38 +2065,59 @@ export default function ProductSearch() {
               <div className="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
               <div className="p-4">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Product Image */}
-                  {productData.image?.imageUrl && (
-                    <div className="relative">
-                      <img
-                        src={productData.image.imageUrl}
-                        alt={productData.title || "Product"}
-                        className="w-full h-auto max-h-[320px] object-contain rounded-lg shadow bg-gray-100 dark:bg-gray-900"
-                        data-image-source={productData._imageSources?.source || "unknown"}
-                        data-stock-image-url={productData._imageSources?.stockImage?.imageUrl || ""}
-                        data-seller-image-url={productData._imageSources?.sellerImage?.imageUrl || ""}
-                        title={`Image Source: ${productData._imageSources?.source === "stock_preferred_with_seller_fallback" ? "Stock Image (from eBay Catalog)" : productData._imageSources?.source === "seller_only" ? "Seller Image (from Browse API)" : productData._imageSources?.source === "seller_only_fallback_due_to_size" ? "Seller Image (fallback - stock image too small)" : "Unknown"}`}
-                      />
-                      {/* Image Source Badge */}
-                      {productData._imageSources?.source && (
-                        <div className={`absolute top-2 right-2 px-2 py-1 rounded text-xs font-semibold ${
-                          productData._imageSources.source === "stock_preferred_with_seller_fallback"
-                            ? "bg-green-500 text-white"
-                            : productData._imageSources.source === "seller_only" || productData._imageSources.source === "seller_only_fallback_due_to_size"
-                            ? "bg-blue-500 text-white"
-                            : "bg-gray-500 text-white"
-                        }`}>
-                          {productData._imageSources.source === "stock_preferred_with_seller_fallback"
-                            ? "📦 Stock"
-                            : productData._imageSources.source === "seller_only"
-                            ? "👤 Seller"
-                            : productData._imageSources.source === "seller_only_fallback_due_to_size"
-                            ? "👤 Seller (Fallback)"
-                            : "❓ Unknown"}
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {/* Photo selection - pick one before listing */}
+                  <div>
+                    <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                      Select a Photo <span className="text-red-500">*</span>
+                    </h3>
+                    {((productData.imageCandidates && productData.imageCandidates.length > 0) || selectedImageUrl) ? (
+                      <div className="grid grid-cols-3 gap-2">
+                        {(productData.imageCandidates || []).map((cand: any) => (
+                          <button
+                            key={cand.url}
+                            type="button"
+                            onClick={() => setSelectedImageUrl(cand.url)}
+                            className={`relative rounded-lg overflow-hidden border-2 transition-colors ${
+                              selectedImageUrl === cand.url
+                                ? "border-blue-500 ring-2 ring-blue-300"
+                                : "border-gray-200 dark:border-gray-700 hover:border-gray-400"
+                            }`}
+                          >
+                            <img
+                              src={cand.url}
+                              alt={(cand.labels || []).join(", ")}
+                              className="w-full h-28 object-contain bg-gray-100 dark:bg-gray-900"
+                            />
+                            <span className="block text-[10px] text-center py-0.5 bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
+                              {(cand.labels || []).join(" • ")}
+                            </span>
+                          </button>
+                        ))}
+                        {selectedImageUrl &&
+                          !(productData.imageCandidates || []).some((c: any) => c.url === selectedImageUrl) && (
+                            <div className="relative rounded-lg overflow-hidden border-2 border-blue-500 ring-2 ring-blue-300">
+                              <img
+                                src={selectedImageUrl}
+                                alt="Uploaded"
+                                className="w-full h-28 object-contain bg-gray-100 dark:bg-gray-900"
+                              />
+                              <span className="block text-[10px] text-center py-0.5 bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
+                                Uploaded
+                              </span>
+                            </div>
+                          )}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500 dark:text-gray-400">
+                        No eBay photos found — upload one below.
+                      </p>
+                    )}
+                    {!selectedImageUrl && (
+                      <p className="text-xs text-red-500 mt-1">
+                        Select a photo (or upload one) before listing.
+                      </p>
+                    )}
+                  </div>
 
                   {/* Product Details */}
                   <div className="space-y-3">
@@ -2192,11 +2225,11 @@ export default function ProductSearch() {
                             onChange={(e) => setEditedDescription(e.target.value)}
                             rows={2}
                             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                            placeholder="e.g. A young soldier becomes separated from his unit during a riot in Belfast..."
+                            placeholder="Description"
                           />
                         ) : (
                           <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap">
-                            {productData.shortDescription || productData.description || "No description"}
+                            {editedDescription || productData.shortDescription || productData.description || "No description"}
                           </p>
                         )}
                       </div>

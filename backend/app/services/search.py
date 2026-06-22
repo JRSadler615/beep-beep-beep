@@ -166,55 +166,62 @@ async def search_product(
                 "additionalImages": [],
             }
 
-        original_seller_image = product.get("image")
-        original_seller_additional = product.get("additionalImages") or []
+        # Build up to 3 selectable photo candidates from the seller results so
+        # the user can choose before listing: Best Match (eBay relevance order),
+        # Best Resolution, and Best Reviews (highest seller feedback).
+        def _img(it: dict) -> str | None:
+            return (it.get("image") or {}).get("imageUrl")
 
-        # Image enrichment: prefer a usable (>640px) Catalog stock image, else
-        # fall back to the seller image. Never fatal — any failure keeps seller.
-        try:
-            if catalog and catalog.get("title"):
-                cat_params = {"q": catalog["title"], "fieldgroups": "FULL"}
-            elif is_upc:
-                cat_params = {"gtin": value, "fieldgroups": "FULL"}
-            else:
-                cat_params = {"q": value, "fieldgroups": "FULL"}
-            cat = await client.get(
-                f"{base}/commerce/catalog/v1_beta/product_summary/search",
-                params=cat_params,
-                headers=browse_headers,
-            )
-            source = "seller_only"
-            if cat.status_code < 400:
-                summaries = (cat.json() or {}).get("productSummaries") or []
-                if summaries:
-                    cp = summaries[0]
-                    stock_image = cp.get("image")
-                    stock_additional = cp.get("additionalImages") or []
-                    if stock_image and stock_image.get("imageUrl"):
-                        size = _image_size_from_url(stock_image["imageUrl"])
-                        if 0 < size <= 640:
-                            source = "seller_only_fallback_due_to_size"
-                        else:
-                            hi = _high_res_image(stock_image)
-                            if not hi:
-                                source = "seller_only_fallback_conversion_failed"
-                            else:
-                                hi_additional = []
-                                for img in stock_additional:
-                                    obj = {"imageUrl": img} if isinstance(img, str) else img
-                                    conv = _high_res_image(obj) or obj
-                                    sz = _image_size_from_url(conv.get("imageUrl"))
-                                    if sz == 0 or sz > 640:
-                                        hi_additional.append(conv)
-                                product["image"] = hi
-                                product["additionalImages"] = (
-                                    hi_additional if hi_additional else original_seller_additional
-                                )
-                                source = "stock_preferred_with_seller_fallback"
-            product["_imageSources"] = {"source": source}
-        except Exception as e:  # noqa: BLE001
-            debug_log("[IMAGE FETCH] exception:", e)
-            product["_imageSources"] = {"source": "seller_only"}
+        with_images = [it for it in items if _img(it)]
+        candidates: list[dict] = []
+        by_url: dict[str, dict] = {}
+
+        def _listing_url(url: str) -> str:
+            # Browse summaries return s-l225 thumbnails; request a large variant
+            # so the chosen photo meets eBay's listing size requirement.
+            return re.sub(r"/s-l\d+\.jpg", "/s-l1600.jpg", url, flags=re.IGNORECASE)
+
+        def _add(url: str | None, label: str, item: dict) -> None:
+            if not url:
+                return
+            big = _listing_url(url)
+            if big in by_url:
+                if label not in by_url[big]["labels"]:
+                    by_url[big]["labels"].append(label)
+                return
+            seller = item.get("seller") or {}
+            entry = {
+                "url": big,
+                "labels": [label],
+                "sellerFeedbackPercentage": seller.get("feedbackPercentage"),
+                "sellerFeedbackScore": seller.get("feedbackScore"),
+            }
+            by_url[big] = entry
+            candidates.append(entry)
+
+        if with_images:
+            # Best Match: top result in eBay's relevance order.
+            _add(_img(with_images[0]), "Best Match", with_images[0])
+            # Best Resolution: largest parsed image size.
+            best_res = max(with_images, key=lambda it: _image_size_from_url(_img(it)))
+            _add(_img(best_res), "Best Resolution", best_res)
+            # Best Reviews: highest seller feedback % then score.
+            rated = [it for it in with_images if (it.get("seller") or {}).get("feedbackPercentage")]
+            if rated:
+                best_rev = max(
+                    rated,
+                    key=lambda it: (
+                        float((it.get("seller") or {}).get("feedbackPercentage") or 0),
+                        (it.get("seller") or {}).get("feedbackScore") or 0,
+                    ),
+                )
+                _add(_img(best_rev), "Best Reviews", best_rev)
+
+        product["imageCandidates"] = candidates
+        # Provide a default primary image (Best Match); the frontend still
+        # requires the user to explicitly pick one before listing.
+        if candidates:
+            product["image"] = {"imageUrl": candidates[0]["url"]}
 
         # Structured DVD fields: from the catalog on a hit, else seed the
         # description from eBay and leave the rest blank for the user to fill.
@@ -223,7 +230,10 @@ async def search_product(
             product["dvdFields"] = {k: (v or "") for k, v in catalog["fields"].items()}
             product["fromCatalog"] = True
         else:
-            ebay_desc = product.get("shortDescription") or product.get("description") or ""
+            # No catalog: take the description from eBay's Best Match (top
+            # result), else leave blank.
+            best_match = with_images[0] if with_images else (items[0] if items else {})
+            ebay_desc = best_match.get("shortDescription") or best_match.get("description") or ""
             product["dvdFields"] = {
                 "type": "",
                 "year": "",
