@@ -1,5 +1,15 @@
 # Backend TODOs
 
+## CD catalog connection (requested)
+
+Add an in-house catalog for CDs, parallel to `dvd_upc_catalog`. When the media
+type "CD" is selected (or searched), check/populate from it the same way the
+DVD flow does. Decide whether to use a separate `cd_upc_catalog` table or a
+shared `media_catalog` table with a `media_type` column; the catalog service
+(`app/services/catalog.py`) and the catalog lookup/save endpoints would
+generalize to accept a media type. The frontend already passes the selected
+type, so wiring is mostly backend.
+
 ## Photo database per UPC/Title with a web scraper (requested)
 
 Add the ability to set up a database of photos keyed by UPC/Title that new

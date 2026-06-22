@@ -8,12 +8,12 @@
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from app.auth import get_user_id
 from app.config import settings
-from app.services.catalog import upsert_dvd
+from app.services.catalog import lookup_dvd_by_upc, upsert_dvd
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -32,6 +32,20 @@ class DvdCatalogEntry(BaseModel):
     rated: str | None = None
     length: str | None = None
     images: str | None = None
+
+
+@router.get("/catalog/dvd")
+def get_dvd(upc: str = Query(...), user_id: str = Depends(get_user_id)):
+    """Look up a DVD in the catalog by UPC. Used when the user selects the
+    'DVD' media type so the form can auto-populate from the catalog."""
+    row = lookup_dvd_by_upc(upc)
+    if not row:
+        return {"found": False}
+    return {
+        "found": True,
+        "title": row.get("title"),
+        "fields": {k: (v or "") for k, v in row["fields"].items()},
+    }
 
 
 @router.post("/catalog/dvd")

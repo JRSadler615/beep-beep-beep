@@ -43,13 +43,12 @@ export default function ProductSearch() {
   const [editedCondition, setEditedCondition] = useState("")
   const [editedPrice, setEditedPrice] = useState("")
   // DVD catalog detail fields (combined into the eBay listing description)
-  const [dvdType, setDvdType] = useState("")
-  const [dvdYear, setDvdYear] = useState("")
-  const [dvdPublisher, setDvdPublisher] = useState("")
-  const [dvdGenre, setDvdGenre] = useState("")
-  const [dvdRated, setDvdRated] = useState("")
-  const [dvdLength, setDvdLength] = useState("")
-  const [isDvd, setIsDvd] = useState(false)
+  const [MediaType, setMediaType] = useState("")
+  const [MediaYear, setMediaYear] = useState("")
+  const [MediaPublisher, setMediaPublisher] = useState("")
+  const [MediaGenre, setMediaGenre] = useState("")
+  const [MediaRated, setMediaRated] = useState("")
+  const [MediaLength, setMediaLength] = useState("")
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
   // Shown when an exact UPC search finds nothing and we drop into manual entry
   const [noMatchWarning, setNoMatchWarning] = useState(false)
@@ -103,7 +102,7 @@ export default function ProductSearch() {
 
   // Seller note editing setting + per-listing edited value (only editable in Edit Mode)
   const DEFAULT_SELLER_NOTE =
-    "Please note: any mention of a digital copy or code may be expired and/or unavailable. This does not affect the quality or functionality of the DVD."
+    "Please note: any mention of a digital copy or code may be expired and/or unavailable. This does not affect the quality or functionality of the Product."
   const [enableSellerNoteEditing, setEnableSellerNoteEditing] = useState<boolean>(false)
   const [universalSellerNoteText, setUniversalSellerNoteText] = useState<string>(DEFAULT_SELLER_NOTE)
   
@@ -330,13 +329,12 @@ export default function ProductSearch() {
           setEditedDescription("")
           setEditedCondition("Used - Very Good")
           setEditedPrice("")
-          setDvdType("")
-          setDvdYear("")
-          setDvdPublisher("")
-          setDvdGenre("")
-          setDvdRated("")
-          setDvdLength("")
-          setIsDvd(true) // manual UPC entry is presumably a DVD to catalog
+          setMediaType("DVD") // manual UPC entry is presumably a DVD to catalog
+          setMediaYear("")
+          setMediaPublisher("")
+          setMediaGenre("")
+          setMediaRated("")
+          setMediaLength("")
           setIsMeanPrice(false)
           setIsEditing(true)
           setListingSuccess(null)
@@ -367,19 +365,18 @@ export default function ProductSearch() {
       // Otherwise, populate from product data
       // Note: If user has previously saved an override description, it will be in productData and will be preserved when they edit again
       // Populate DVD detail fields from the catalog (or eBay for the description)
-      const dvd = data.dvdFields || {}
-      setDvdType(dvd.type || "")
-      setDvdYear(dvd.year || "")
-      setDvdPublisher(dvd.publisher || "")
-      setDvdGenre(dvd.genre || "")
-      setDvdRated(dvd.rated || "")
-      setDvdLength(dvd.length || "")
-      // Came from the catalog -> it's a known DVD; pre-check the box.
-      setIsDvd(!!data.fromCatalog)
+      const Media = data.dvdFields || {}
+      // A catalog hit is a DVD; otherwise use the eBay/Media type if present.
+      setMediaType(data.fromCatalog ? "DVD" : (Media.type || ""))
+      setMediaYear(Media.year || "")
+      setMediaPublisher(Media.publisher || "")
+      setMediaGenre(Media.genre || "")
+      setMediaRated(Media.rated || "")
+      setMediaLength(Media.length || "")
       setEditedDescription(
         useOverrideDescription
           ? ""
-          : (dvd.description || data.shortDescription || data.description || "")
+          : (Media.description || data.shortDescription || data.description || "")
       )
       setEditedCondition(defaultCondition)
       setEditedPrice(data.price?.value || "0.00")
@@ -494,14 +491,13 @@ export default function ProductSearch() {
     setDuplicateCheckComplete(false) // Clear duplicate check status
     setInventoryMessage(null) // Clear inventory increase message
 
-    // Clear DVD detail fields too
-    setDvdType("")
-    setDvdYear("")
-    setDvdPublisher("")
-    setDvdGenre("")
-    setDvdRated("")
-    setDvdLength("")
-    setIsDvd(false)
+    // Clear Media detail fields too
+    setMediaType("")
+    setMediaYear("")
+    setMediaPublisher("")
+    setMediaGenre("")
+    setMediaRated("")
+    setMediaLength("")
     setNoMatchWarning(false)
 
     // After clearing, refocus UPC input so the next barcode scan goes straight into it
@@ -511,20 +507,53 @@ export default function ProductSearch() {
     }
   }
 
-  // Combine the structured DVD fields + description into the labeled HTML block
+  // Combine the structured Media fields + description into the labeled HTML block
   // sent as the eBay listing description.
   const buildCombinedDescription = (): string => {
     const rows: string[] = []
-    if (dvdType.trim()) rows.push(`<b>Type:</b> ${dvdType.trim()}`)
-    if (dvdYear.trim()) rows.push(`<b>Year:</b> ${dvdYear.trim()}`)
-    if (dvdPublisher.trim()) rows.push(`<b>Publisher:</b> ${dvdPublisher.trim()}`)
-    if (dvdGenre.trim()) rows.push(`<b>Genre:</b> ${dvdGenre.trim()}`)
-    if (dvdRated.trim()) rows.push(`<b>Rated:</b> ${dvdRated.trim()}`)
-    if (dvdLength.trim()) rows.push(`<b>Length:</b> ${dvdLength.trim()}`)
+    if (MediaType.trim()) rows.push(`<b>Type:</b> ${MediaType.trim()}`)
+    if (MediaYear.trim()) rows.push(`<b>Year:</b> ${MediaYear.trim()}`)
+    if (MediaPublisher.trim()) rows.push(`<b>Publisher:</b> ${MediaPublisher.trim()}`)
+    if (MediaGenre.trim()) rows.push(`<b>Genre:</b> ${MediaGenre.trim()}`)
+    if (MediaRated.trim()) rows.push(`<b>Rated:</b> ${MediaRated.trim()}`)
+    if (MediaLength.trim()) rows.push(`<b>Length:</b> ${MediaLength.trim()}`)
     const header = rows.join("<br>\n")
     const desc = (editedDescription || "").trim()
     if (!header) return desc
     return desc ? `${header}<br><br>\n${desc}` : header
+  }
+
+  // Media type -> eBay leaf category id.
+  const MEDIA_CATEGORY_IDS: Record<string, string> = {
+    DVD: "617", // DVDs & Blu-ray Discs
+    CD: "176984",
+    Cassette: "176983",
+    VHS: "309",
+  }
+
+  // Change the media type. Selecting "DVD" runs a catalog check and, if the
+  // item is in the catalog, populates the fields from it.
+  const handleMediaTypeChange = async (value: string) => {
+    setMediaType(value)
+    if (value !== "DVD") return
+    const lookupUpc = (upc || productData?.gtin || "").trim()
+    if (!lookupUpc) return
+    try {
+      const res = await apiRequest(`/api/catalog/dvd?upc=${encodeURIComponent(lookupUpc)}`)
+      const data = await res.json()
+      if (res.ok && data.found) {
+        const f = data.fields || {}
+        if (data.title) setEditedTitle(data.title)
+        if (f.description) setEditedDescription(f.description)
+        if (f.year) setMediaYear(f.year)
+        if (f.publisher) setMediaPublisher(f.publisher)
+        if (f.genre) setMediaGenre(f.genre)
+        if (f.rated) setMediaRated(f.rated)
+        if (f.length) setMediaLength(f.length)
+      }
+    } catch {
+      // Non-fatal: catalog check is best-effort
+    }
   }
 
   // Upload a photo to Supabase Storage and use it as the listing image.
@@ -559,13 +588,13 @@ export default function ProductSearch() {
         body: JSON.stringify({
           upc: catalogUpc,
           title,
-          type: dvdType,
-          year: dvdYear,
+          type: MediaType,
+          year: MediaYear,
           description: editedDescription,
-          publisher: dvdPublisher,
-          genre: dvdGenre,
-          rated: dvdRated,
-          length: dvdLength,
+          publisher: MediaPublisher,
+          genre: MediaGenre,
+          rated: MediaRated,
+          length: MediaLength,
           images: productData?.image?.imageUrl || null,
         }),
       })
@@ -835,14 +864,14 @@ export default function ProductSearch() {
         descriptionToSend = universalOverrideDescription
         descriptionSource = "UNIVERSAL_OVERRIDE"
       } else {
-        // Combine the structured DVD fields + description into the labeled
+        // Combine the structured Media fields + description into the labeled
         // HTML block. Falls back to the eBay description if all are empty.
         descriptionToSend =
           buildCombinedDescription() ||
           productData.shortDescription ||
           productData.description ||
           ""
-        descriptionSource = "COMBINED_DVD_FIELDS"
+        descriptionSource = "COMBINED_Media_FIELDS"
       }
       
       console.log("[FRONTEND DEBUG] Listing to eBay - Final Description Decision:", JSON.stringify({
@@ -890,8 +919,9 @@ export default function ProductSearch() {
           imageUrl: productData.image?.imageUrl || "",
           additionalImages: productData.additionalImages || [],
           
-          // Category information from Browse API
-          categoryId: productData.categoryId || "",
+          // Category: prefer the eBay category mapped from the selected media
+          // type, falling back to the Browse API category.
+          categoryId: MEDIA_CATEGORY_IDS[MediaType] || productData.categoryId || "",
           categories: productData.categories || [],
           
           // Product identifiers
@@ -1045,8 +1075,8 @@ export default function ProductSearch() {
       setUserProvidedAspects({})
       
       setListingSuccess(data.listingUrl || data.message || "Product listed successfully!")
-      // If marked as a DVD, save/update the catalog with these details
-      if (isDvd) {
+      // If the media type is DVD, save/update the catalog with these details
+      if (MediaType === "DVD") {
         saveToDvdCatalog().catch(() => {})
       }
       // Capture the SKU that was used for this listing and calculate next SKU
@@ -2158,28 +2188,31 @@ export default function ProductSearch() {
                       </div>
                     )}
 
-                    {/* DVD Details - structured fields combined into the listing description */}
+                    {/* Media Details - structured fields combined into the listing description */}
                     <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400">DVD Details</h3>
-                        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={isDvd}
-                            onChange={(e) => setIsDvd(e.target.checked)}
-                            className="rounded border-gray-300 dark:border-gray-600"
-                          />
-                          This is a DVD
-                        </label>
-                      </div>
+                      <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-2">Product Details</h3>
                       <div className="grid grid-cols-2 gap-2">
+                        {/* Type: drop-down -> sets the eBay category. Selecting DVD
+                            runs the catalog check and populates from it. */}
+                        <select
+                          value={MediaType}
+                          onChange={(e) => handleMediaTypeChange(e.target.value)}
+                          aria-label="Type"
+                          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                        >
+                          <option value="">Type…</option>
+                          <option value="DVD">DVD</option>
+                          <option value="CD">CD</option>
+                          <option value="VHS">VHS</option>
+                          <option value="Cassette">Cassette</option>
+                          <option value="Other">Other</option>
+                        </select>
                         {([
-                          ["Type", dvdType, setDvdType, "e.g. DVD"],
-                          ["Year", dvdYear, setDvdYear, "e.g. 2015"],
-                          ["Publisher", dvdPublisher, setDvdPublisher, "e.g. Sony Pictures"],
-                          ["Genre", dvdGenre, setDvdGenre, "e.g. Action, Suspense"],
-                          ["Rated", dvdRated, setDvdRated, "e.g. R"],
-                          ["Length", dvdLength, setDvdLength, "e.g. 01:39"],
+                          ["Year", MediaYear, setMediaYear, "e.g. 2015"],
+                          ["Publisher", MediaPublisher, setMediaPublisher, "e.g. Sony Pictures"],
+                          ["Genre", MediaGenre, setMediaGenre, "e.g. Action, Suspense"],
+                          ["Rated", MediaRated, setMediaRated, "e.g. R"],
+                          ["Length", MediaLength, setMediaLength, "e.g. 01:39"],
                         ] as [string, string, (v: string) => void, string][]).map(
                           ([label, val, setter, example]) => (
                             <input
@@ -2195,7 +2228,7 @@ export default function ProductSearch() {
                         )}
                       </div>
                       <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-                        These combine with the description into the eBay listing. "This is a DVD" saves them to the catalog on listing.
+                        Type sets the eBay category. Selecting "DVD" checks the in-house catalog and, on listing, saves these details to it. The fields combine with the description into the listing.
                       </p>
                     </div>
 
