@@ -51,6 +51,8 @@ export default function ProductSearch() {
   const [dvdLength, setDvdLength] = useState("")
   const [isDvd, setIsDvd] = useState(false)
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
+  // Shown when an exact UPC search finds nothing and we drop into manual entry
+  const [noMatchWarning, setNoMatchWarning] = useState(false)
   
   // Listing state
   const [listingLoading, setListingLoading] = useState(false)
@@ -292,6 +294,7 @@ export default function ProductSearch() {
 
     setError("")
     setProductData(null)
+    setNoMatchWarning(false) // Clear any prior no-match warning
     setInventoryMessage(null) // Clear any previous inventory success/error messages
     setIncreasingInventory(false) // Reset inventory loading state
     setListingError(null) // Clear any previous listing errors
@@ -312,6 +315,33 @@ export default function ProductSearch() {
         // If token refresh failed, update connection status
         if (data.needsReconnect) {
           setIsConnected(false)
+        }
+        // Exact UPC search found nothing in the catalog or on eBay: drop into
+        // a blank manual-entry form instead of showing an error.
+        if (res.status === 404 && effectiveType === "upc") {
+          setNoMatchWarning(true)
+          setProductData({
+            title: "",
+            price: { value: "", currency: "USD" },
+            image: undefined,
+            additionalImages: [],
+          })
+          setEditedTitle("")
+          setEditedDescription("")
+          setEditedCondition("Used - Very Good")
+          setEditedPrice("")
+          setDvdType("")
+          setDvdYear("")
+          setDvdPublisher("")
+          setDvdGenre("")
+          setDvdRated("")
+          setDvdLength("")
+          setIsDvd(true) // manual UPC entry is presumably a DVD to catalog
+          setIsMeanPrice(false)
+          setIsEditing(true)
+          setListingSuccess(null)
+          fetchSkuPreview()
+          return
         }
         throw new Error(data.error || "Failed to search product")
       }
@@ -472,6 +502,7 @@ export default function ProductSearch() {
     setDvdRated("")
     setDvdLength("")
     setIsDvd(false)
+    setNoMatchWarning(false)
 
     // After clearing, refocus UPC input so the next barcode scan goes straight into it
     if (upcInputRef.current) {
@@ -1697,6 +1728,12 @@ export default function ProductSearch() {
                 </div>
             </form>
 
+            {noMatchWarning && (
+              <div className="mt-4 p-4 bg-amber-100 dark:bg-amber-900/30 border border-amber-400 dark:border-amber-700 text-amber-800 dark:text-amber-300 rounded">
+                No exact UPC matches found on in-house catalog or eBay. Please fill out the boxes below or search again by title.
+              </div>
+            )}
+
             {error && (
               <div className="mt-4 p-4 bg-yellow-100 dark:bg-yellow-900/30 border border-yellow-400 dark:border-yellow-700 text-yellow-700 dark:text-yellow-400 rounded">
                 <div className="flex items-start justify-between gap-4">
@@ -2065,7 +2102,7 @@ export default function ProductSearch() {
                           value={editedTitle}
                           onChange={(e) => setEditedTitle(e.target.value)}
                           className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
-                          placeholder="Enter product title"
+                          placeholder="e.g. The Matrix (1999)"
                         />
                       ) : (
                         <p className="text-gray-900 dark:text-white">
@@ -2111,7 +2148,7 @@ export default function ProductSearch() {
                             onChange={(e) => setEditedDescription(e.target.value)}
                             rows={2}
                             className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                            placeholder="Enter product description"
+                            placeholder="e.g. A young soldier becomes separated from his unit during a riot in Belfast..."
                           />
                         ) : (
                           <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap">
@@ -2137,22 +2174,25 @@ export default function ProductSearch() {
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         {([
-                          ["Type", dvdType, setDvdType],
-                          ["Year", dvdYear, setDvdYear],
-                          ["Publisher", dvdPublisher, setDvdPublisher],
-                          ["Genre", dvdGenre, setDvdGenre],
-                          ["Rated", dvdRated, setDvdRated],
-                          ["Length", dvdLength, setDvdLength],
-                        ] as [string, string, (v: string) => void][]).map(([label, val, setter]) => (
-                          <input
-                            key={label}
-                            type="text"
-                            value={val}
-                            onChange={(e) => setter(e.target.value)}
-                            placeholder={label}
-                            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                          />
-                        ))}
+                          ["Type", dvdType, setDvdType, "e.g. DVD"],
+                          ["Year", dvdYear, setDvdYear, "e.g. 2015"],
+                          ["Publisher", dvdPublisher, setDvdPublisher, "e.g. Sony Pictures"],
+                          ["Genre", dvdGenre, setDvdGenre, "e.g. Action, Suspense"],
+                          ["Rated", dvdRated, setDvdRated, "e.g. R"],
+                          ["Length", dvdLength, setDvdLength, "e.g. 01:39"],
+                        ] as [string, string, (v: string) => void, string][]).map(
+                          ([label, val, setter, example]) => (
+                            <input
+                              key={label}
+                              type="text"
+                              value={val}
+                              onChange={(e) => setter(e.target.value)}
+                              placeholder={example}
+                              aria-label={label}
+                              className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                            />
+                          )
+                        )}
                       </div>
                       <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                         These combine with the description into the eBay listing. "This is a DVD" saves them to the catalog on listing.
