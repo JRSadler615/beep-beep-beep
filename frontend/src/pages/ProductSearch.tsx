@@ -30,8 +30,6 @@ export default function ProductSearch() {
   const [isConnected, setIsConnected] = useState(false)
   const [error, setError] = useState("")
   const [productData, setProductData] = useState<ProductData | null>(null)
-  // The photo the user picked (from candidates or upload); required to list
-  const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null)
   const [scannerActive, setScannerActive] = useState(false)
   const [scanningStatus, setScanningStatus] = useState("")
   const [debugLogs, setDebugLogs] = useState<string[]>([])
@@ -329,7 +327,6 @@ export default function ProductSearch() {
             image: undefined,
             additionalImages: [],
           })
-          setSelectedImageUrl(null)
           setEditedTitle("")
           setEditedDescription("")
           setEditedCondition("Used - Very Good")
@@ -359,7 +356,6 @@ export default function ProductSearch() {
       }
       
       setProductData(productDataWithDefaultCondition)
-      setSelectedImageUrl(null) // require an explicit photo choice before listing
       // Initialize editable fields with product data
       // Apply keyword removal to title
       const processedTitle = removeKeywords(data.title || "", bannedKeywords)
@@ -372,8 +368,9 @@ export default function ProductSearch() {
       // Note: If user has previously saved an override description, it will be in productData and will be preserved when they edit again
       // Populate DVD detail fields from the catalog (or eBay for the description)
       const Media = data.dvdFields || {}
-      // A catalog hit is a DVD; otherwise default to the searched media type.
-      setMediaType(data.fromCatalog ? "DVD" : (searchMediaType || Media.type || ""))
+      // On a catalog hit, use the catalog's stored type (DVD/Blu-ray/4k DVD);
+      // otherwise default to the searched media type.
+      setMediaType(data.fromCatalog ? (Media.type || "DVD") : (searchMediaType || Media.type || ""))
       setMediaYear(Media.year || "")
       setMediaPublisher(Media.publisher || "")
       setMediaGenre(Media.genre || "")
@@ -474,7 +471,6 @@ export default function ProductSearch() {
   const handleClearProduct = () => {
     // Clear all product-related state
     setProductData(null)
-    setSelectedImageUrl(null)
     setUpc("") // Clear UPC from search bar
     setEditedTitle("")
     setEditedDescription("")
@@ -530,19 +526,25 @@ export default function ProductSearch() {
     return desc ? `${header}<br><br>\n${desc}` : header
   }
 
-  // Media type -> eBay leaf category id.
+  // Media type -> eBay leaf category id. DVD / Blu-ray / 4k DVD all live under
+  // "DVDs & Blu-ray Discs" (617).
   const MEDIA_CATEGORY_IDS: Record<string, string> = {
-    DVD: "617", // DVDs & Blu-ray Discs
+    DVD: "617",
+    "Blu-ray": "617",
+    "4k DVD": "617",
     CD: "176984",
     Cassette: "176983",
     VHS: "309",
   }
 
-  // Change the media type. Selecting "DVD" runs a catalog check and, if the
-  // item is in the catalog, populates the fields from it.
+  // Media types backed by the DVD catalog (catalog check + save behave alike).
+  const CATALOG_TYPES = ["DVD", "Blu-ray", "4k DVD"]
+
+  // Change the media type. Selecting a DVD-family type runs a catalog check
+  // and, if the item is in the catalog, populates the fields from it.
   const handleMediaTypeChange = async (value: string) => {
     setMediaType(value)
-    if (value !== "DVD") return
+    if (!CATALOG_TYPES.includes(value)) return
     const lookupUpc = (upc || productData?.gtin || "").trim()
     if (!lookupUpc) return
     try {
@@ -576,7 +578,6 @@ export default function ProductSearch() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Photo upload failed")
       setProductData({ ...productData, image: { imageUrl: data.url } })
-      setSelectedImageUrl(data.url) // uploaded photo becomes the selection
     } catch (err: any) {
       setListingError(err.message || "Photo upload failed")
     } finally {
@@ -744,12 +745,6 @@ export default function ProductSearch() {
   
   const handleListOnEbay = async (additionalAspects?: Record<string, string>, bypassFloorWarning?: boolean) => {
     if (!productData) return
-
-    // Require an explicit photo choice before listing
-    if (!selectedImageUrl) {
-      setListingError("Please select a photo (or upload one) before listing.")
-      return
-    }
 
     // Check if price hits floor and show warning dialog (unless bypassed)
     const listingPrice = editedPrice || productData.price?.value || "0.00"
@@ -930,7 +925,7 @@ export default function ProductSearch() {
           conditionDescription: conditionDescriptionToSend,
           
           // Images - primary and additional
-          imageUrl: selectedImageUrl || productData.image?.imageUrl || "",
+          imageUrl: productData.image?.imageUrl || "",
           additionalImages: productData.additionalImages || [],
           
           // Category: prefer the eBay category mapped from the selected media
@@ -1089,8 +1084,8 @@ export default function ProductSearch() {
       setUserProvidedAspects({})
       
       setListingSuccess(data.listingUrl || data.message || "Product listed successfully!")
-      // If the media type is DVD, save/update the catalog with these details
-      if (MediaType === "DVD") {
+      // If a DVD-family type, save/update the catalog with these details
+      if (CATALOG_TYPES.includes(MediaType)) {
         saveToDvdCatalog().catch(() => {})
       }
       // Capture the SKU that was used for this listing and calculate next SKU
@@ -1713,6 +1708,8 @@ export default function ProductSearch() {
                   className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                 >
                   <option value="DVD">DVD</option>
+                  <option value="Blu-ray">Blu-ray</option>
+                  <option value="4k DVD">4k DVD</option>
                   <option value="CD">CD</option>
                   <option value="VHS">VHS</option>
                   <option value="Cassette">Cassette</option>
@@ -2065,57 +2062,18 @@ export default function ProductSearch() {
               <div className="bg-white dark:bg-gray-800 shadow rounded-lg overflow-hidden">
               <div className="p-4">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Photo selection - pick one before listing */}
+                  {/* Best Match photo (upload below to override) */}
                   <div>
-                    <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
-                      Select a Photo <span className="text-red-500">*</span>
-                    </h3>
-                    {((productData.imageCandidates && productData.imageCandidates.length > 0) || selectedImageUrl) ? (
-                      <div className="grid grid-cols-3 gap-2">
-                        {(productData.imageCandidates || []).map((cand: any) => (
-                          <button
-                            key={cand.url}
-                            type="button"
-                            onClick={() => setSelectedImageUrl(cand.url)}
-                            className={`relative rounded-lg overflow-hidden border-2 transition-colors ${
-                              selectedImageUrl === cand.url
-                                ? "border-blue-500 ring-2 ring-blue-300"
-                                : "border-gray-200 dark:border-gray-700 hover:border-gray-400"
-                            }`}
-                          >
-                            <img
-                              src={cand.url}
-                              alt={(cand.labels || []).join(", ")}
-                              className="w-full h-28 object-contain bg-gray-100 dark:bg-gray-900"
-                            />
-                            <span className="block text-[10px] text-center py-0.5 bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
-                              {(cand.labels || []).join(" • ")}
-                            </span>
-                          </button>
-                        ))}
-                        {selectedImageUrl &&
-                          !(productData.imageCandidates || []).some((c: any) => c.url === selectedImageUrl) && (
-                            <div className="relative rounded-lg overflow-hidden border-2 border-blue-500 ring-2 ring-blue-300">
-                              <img
-                                src={selectedImageUrl}
-                                alt="Uploaded"
-                                className="w-full h-28 object-contain bg-gray-100 dark:bg-gray-900"
-                              />
-                              <span className="block text-[10px] text-center py-0.5 bg-gray-50 dark:bg-gray-800 text-gray-600 dark:text-gray-300">
-                                Uploaded
-                              </span>
-                            </div>
-                          )}
-                      </div>
+                    {productData.image?.imageUrl ? (
+                      <img
+                        src={productData.image.imageUrl}
+                        alt={productData.title || "Product"}
+                        className="w-full h-auto max-h-[320px] object-contain rounded-lg shadow bg-gray-100 dark:bg-gray-900"
+                      />
                     ) : (
-                      <p className="text-sm text-gray-500 dark:text-gray-400">
-                        No eBay photos found — upload one below.
-                      </p>
-                    )}
-                    {!selectedImageUrl && (
-                      <p className="text-xs text-red-500 mt-1">
-                        Select a photo (or upload one) before listing.
-                      </p>
+                      <div className="w-full h-[320px] flex items-center justify-center rounded-lg border border-dashed border-gray-300 dark:border-gray-700 text-sm text-gray-500 dark:text-gray-400">
+                        No photo — upload one below
+                      </div>
                     )}
                   </div>
 
@@ -2251,6 +2209,8 @@ export default function ProductSearch() {
                         >
                           <option value="">Media Type</option>
                           <option value="DVD">DVD</option>
+                          <option value="Blu-ray">Blu-ray</option>
+                          <option value="4k DVD">4k DVD</option>
                           <option value="CD">CD</option>
                           <option value="VHS">VHS</option>
                           <option value="Cassette">Cassette</option>

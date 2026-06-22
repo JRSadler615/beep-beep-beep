@@ -17,12 +17,24 @@ from app.services.ebay_client import EbayTokenError, debug_log, get_valid_ebay_t
 
 # Media type -> eBay leaf category id (mirrors the frontend map). Used to
 # scope the Browse search so results don't blend formats (e.g. CD vs DVD).
+# DVD / Blu-ray / 4k DVD all live under "DVDs & Blu-ray Discs" (617).
 MEDIA_CATEGORY_IDS = {
     "DVD": "617",
+    "Blu-ray": "617",
+    "4k DVD": "617",
     "CD": "176984",
     "Cassette": "176983",
     "VHS": "309",
 }
+
+# Allowed media categories (leaves + the Movies & TV / Music parents).
+# NOTE: eBay Browse allows only ONE category_id per search (error 12030), so we
+# scope each search to the single category matching the selected media type.
+# "Other" has no single category and is left unrestricted.
+ALLOWED_CATEGORY_IDS = ["617", "176984", "176983", "309", "11232", "11233"]
+
+# Media types backed by the DVD catalog (catalog check + save behave the same).
+CATALOG_TYPES = {"", "DVD", "Blu-ray", "4k DVD"}
 
 
 def _image_size_from_url(url: str | None) -> int:
@@ -89,11 +101,11 @@ async def search_product(
     }
 
     is_upc = search_type == "upc"
+    # Scope to the media type's single eBay category (only "Other" has none).
     category_id = MEDIA_CATEGORY_IDS.get(media_type)
 
-    # Step 1: check the local catalog. Only DVDs have a catalog today, so skip
-    # the lookup for explicitly non-DVD types (one less DB round-trip).
-    do_catalog = is_upc and media_type in ("", "DVD")
+    # Step 1: check the local catalog for DVD-family types (DVD/Blu-ray/4k DVD).
+    do_catalog = is_upc and media_type in CATALOG_TYPES
     catalog = lookup_dvd_by_upc(value) if do_catalog else None
 
     # Step 2: choose the eBay query used to gather price comps + a photo.
@@ -106,7 +118,7 @@ async def search_product(
     else:
         browse_params = {"q": value, "fieldgroups": "EXTENDED"}
 
-    # Scope to the media type's eBay category so results don't blend formats.
+    # Restrict the search to the selected format's category (eBay allows one).
     if category_id:
         browse_params["category_ids"] = category_id
 
@@ -166,62 +178,17 @@ async def search_product(
                 "additionalImages": [],
             }
 
-        # Build up to 3 selectable photo candidates from the seller results so
-        # the user can choose before listing: Best Match (eBay relevance order),
-        # Best Resolution, and Best Reviews (highest seller feedback).
+        # Use the Best Match photo (top result in eBay's relevance order),
+        # upscaled from the s-l225 thumbnail to a listing-usable size.
         def _img(it: dict) -> str | None:
             return (it.get("image") or {}).get("imageUrl")
 
         with_images = [it for it in items if _img(it)]
-        candidates: list[dict] = []
-        by_url: dict[str, dict] = {}
-
-        def _listing_url(url: str) -> str:
-            # Browse summaries return s-l225 thumbnails; request a large variant
-            # so the chosen photo meets eBay's listing size requirement.
-            return re.sub(r"/s-l\d+\.jpg", "/s-l1600.jpg", url, flags=re.IGNORECASE)
-
-        def _add(url: str | None, label: str, item: dict) -> None:
-            if not url:
-                return
-            big = _listing_url(url)
-            if big in by_url:
-                if label not in by_url[big]["labels"]:
-                    by_url[big]["labels"].append(label)
-                return
-            seller = item.get("seller") or {}
-            entry = {
-                "url": big,
-                "labels": [label],
-                "sellerFeedbackPercentage": seller.get("feedbackPercentage"),
-                "sellerFeedbackScore": seller.get("feedbackScore"),
-            }
-            by_url[big] = entry
-            candidates.append(entry)
-
         if with_images:
-            # Best Match: top result in eBay's relevance order.
-            _add(_img(with_images[0]), "Best Match", with_images[0])
-            # Best Resolution: largest parsed image size.
-            best_res = max(with_images, key=lambda it: _image_size_from_url(_img(it)))
-            _add(_img(best_res), "Best Resolution", best_res)
-            # Best Reviews: highest seller feedback % then score.
-            rated = [it for it in with_images if (it.get("seller") or {}).get("feedbackPercentage")]
-            if rated:
-                best_rev = max(
-                    rated,
-                    key=lambda it: (
-                        float((it.get("seller") or {}).get("feedbackPercentage") or 0),
-                        (it.get("seller") or {}).get("feedbackScore") or 0,
-                    ),
-                )
-                _add(_img(best_rev), "Best Reviews", best_rev)
-
-        product["imageCandidates"] = candidates
-        # Provide a default primary image (Best Match); the frontend still
-        # requires the user to explicitly pick one before listing.
-        if candidates:
-            product["image"] = {"imageUrl": candidates[0]["url"]}
+            best_url = re.sub(
+                r"/s-l\d+\.jpg", "/s-l1600.jpg", _img(with_images[0]), flags=re.IGNORECASE
+            )
+            product["image"] = {"imageUrl": best_url}
 
         # Structured DVD fields: from the catalog on a hit, else seed the
         # description from eBay and leave the rest blank for the user to fill.
