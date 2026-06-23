@@ -1,5 +1,21 @@
 # Backend TODOs
 
+## Inventory table for faster duplicate checks (requested)
+
+Create an `inventory` table in Supabase mirroring the seller's eBay inventory
+(at least UPC, SKU, title, offer/listing id, status), so the duplicate check
+(`/api/ebay/check-duplicate`) can query the DB instead of paginating the eBay
+Inventory API (currently up to 30 pages of 200 items — slow).
+
+Sketch:
+- Schema: `inventory(user_id, sku, upc, title, offer_id, listing_id, status,
+  updated_at)` with an index on `(user_id, upc)`.
+- Keep it in sync: write a row on every successful `list` / `increase-inventory`;
+  periodically reconcile via a background worker that pulls the eBay inventory
+  feed (the group stack runs `python -m app.workers.*` systemd units).
+- `check-duplicate` then does a single indexed lookup by normalized UPC,
+  falling back to the eBay API only on a miss / stale data.
+
 ## CD catalog connection (requested)
 
 Add an in-house catalog for CDs, parallel to `dvd_upc_catalog`. When the media

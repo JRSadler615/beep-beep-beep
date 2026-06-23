@@ -1708,12 +1708,9 @@ export default function ProductSearch() {
                   className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                 >
                   <option value="DVD">DVD</option>
-                  <option value="Blu-ray">Blu-ray</option>
-                  <option value="4k DVD">4k DVD</option>
                   <option value="CD">CD</option>
                   <option value="VHS">VHS</option>
                   <option value="Cassette">Cassette</option>
-                  <option value="Other">Other</option>
                 </select>
                 <select
                   value={searchType}
