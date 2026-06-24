@@ -76,6 +76,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 }
 
+/**
+ * useAuth — hook to read the auth context.
+ *
+ * Output: { session, user, loading, signIn, signUp, signOut }. Throws if used
+ *         outside an <AuthProvider> (programming error, surfaced loudly).
+ */
 export function useAuth() {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error("useAuth must be used within an AuthProvider")

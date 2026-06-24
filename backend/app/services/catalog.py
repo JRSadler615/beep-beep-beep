@@ -3,7 +3,7 @@
 One catalog table per media family, all sharing the same columns (mixed casing
 as created in Supabase):
   UPC, Title, PUBLISHER, Description, IMAGES, Type, Year, Genres, Rated, Length,
-  Weight, Weight_units, Height, Width, Depth, Dimension_units
+  Artist, Weight, Weight_units, Height, Width, Depth, Dimension_units
 
 The media type selects which table to read/write:
   DVD / Blu-ray / 4k DVD -> dvd_upc_catalog
@@ -38,7 +38,7 @@ def catalog_table_for(media_type: str | None) -> str | None:
         return "dvd_upc_catalog"
     return CATALOG_TABLES.get(mt)
 
-# The 7 structured listing fields, mapped to their catalog column names.
+# The structured listing fields, mapped to their catalog column names.
 FIELD_COLUMNS = {
     "type": "Type",
     "year": "Year",
@@ -47,6 +47,7 @@ FIELD_COLUMNS = {
     "genre": "Genres",
     "rated": "Rated",
     "length": "Length",
+    "artist": "Artist",  # used by music catalogs (CD/Cassette); blank otherwise
 }
 
 # Package dimension/weight fields, mapped to their catalog column names.

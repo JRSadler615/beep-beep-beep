@@ -1,3 +1,11 @@
+"""Application settings.
+
+Defines the typed `Settings` model (Supabase keys, CORS/redirect origin, eBay
+OAuth credentials/flags, Sentry DSN) loaded from the environment, with derived
+eBay URL properties that switch between sandbox and production. `settings` is the
+cached singleton imported throughout the app.
+"""
+
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -51,6 +59,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the process-wide Settings singleton (built once, then cached)."""
     return Settings()
 
 

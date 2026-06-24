@@ -14,6 +14,19 @@ interface EbayPolicies {
   returnPolicies: Policy[]
 }
 
+/**
+ * Settings — configures everything the listing flow depends on.
+ *
+ * Each card loads from and saves to its own /api/settings/* endpoint:
+ *   SKU prefix/counter, eBay business policies, inventory (ship-from) location,
+ *   per-media-type dimension/weight defaults, banned keywords, discount,
+ *   default edit mode, universal seller note, universal override description,
+ *   and Best Offer settings.
+ *
+ * Inputs:  the user's saved settings (fetched on mount) and form edits.
+ * Outputs: persisted settings via POST upserts; renders a success/error banner
+ *          per save. No listing happens here — this only stores configuration.
+ */
 export default function Settings() {
   const [nextSkuCounter, setNextSkuCounter] = useState<number>(1)
   const [skuPrefix, setSkuPrefix] = useState<string | null>(null)

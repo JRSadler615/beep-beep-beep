@@ -1,6 +1,7 @@
-"""DVD catalog writes + manual photo upload.
+"""Media catalog reads/writes + manual photo upload.
 
-- POST /api/catalog/dvd   : upsert a row into dvd_upc_catalog ("This is a DVD").
+- GET  /api/catalog/media : look up a UPC in the media type's catalog.
+- POST /api/catalog/media : upsert a row into the media type's catalog.
 - POST /api/upload-photo  : upload an image to Supabase Storage, return its
   public URL (for use as a listing photo).
 """
@@ -21,7 +22,7 @@ _PHOTO_BUCKET = "listing-photos"
 _ALLOWED_EXT = {"jpg", "jpeg", "png", "webp", "gif"}
 
 
-class DvdCatalogEntry(BaseModel):
+class CatalogEntry(BaseModel):
     upc: str
     title: str
     # Which catalog to write (DVD/Blu-ray/4k DVD/CD/VHS/Cassette). Defaults to
@@ -34,6 +35,7 @@ class DvdCatalogEntry(BaseModel):
     genre: str | None = None
     rated: str | None = None
     length: str | None = None
+    artist: str | None = None  # music catalogs (CD/Cassette)
     images: str | None = None
     # Package dimensions / weight (numbers sent as strings from the form).
     height: str | None = None
@@ -44,8 +46,8 @@ class DvdCatalogEntry(BaseModel):
     weightUnits: str | None = None
 
 
-@router.get("/catalog/dvd")
-def get_dvd(
+@router.get("/catalog/media")
+def get_catalog(
     upc: str = Query(...),
     mediaType: str = Query("DVD"),
     user_id: str = Depends(get_user_id),
@@ -65,9 +67,9 @@ def get_dvd(
     }
 
 
-@router.post("/catalog/dvd")
-def save_dvd(entry: DvdCatalogEntry, user_id: str = Depends(get_user_id)):
-    """Upsert the item into the DVD catalog ("This is a DVD")."""
+@router.post("/catalog/media")
+def save_catalog(entry: CatalogEntry, user_id: str = Depends(get_user_id)):
+    """Upsert the item into the media type's catalog."""
     if not entry.upc or not entry.upc.strip():
         raise HTTPException(status_code=400, detail="UPC is required")
     if not entry.title or not entry.title.strip():
@@ -80,6 +82,7 @@ def save_dvd(entry: DvdCatalogEntry, user_id: str = Depends(get_user_id)):
         "genre": entry.genre,
         "rated": entry.rated,
         "length": entry.length,
+        "artist": entry.artist,
     }
     dims = {
         "height": entry.height,

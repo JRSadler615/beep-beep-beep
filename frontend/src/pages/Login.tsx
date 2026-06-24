@@ -2,6 +2,14 @@ import { useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { useAuth } from "@/context/AuthContext"
 
+/**
+ * Login — the email/password sign-in page.
+ *
+ * Inputs:  the email/password form fields; an optional ?registered query param
+ *          (shows a "check your email" notice after sign-up).
+ * Outputs: on success, signs in via Supabase (AuthContext.signIn) and navigates
+ *          to /dashboard; on failure, renders the error message.
+ */
 export default function Login() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()

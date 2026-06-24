@@ -1,3 +1,11 @@
+"""Request authentication.
+
+Provides the `get_user_id` FastAPI dependency: it verifies the Supabase access
+token from the Authorization: Bearer header (handling both HS256 and ES256/RS256
+projects) and returns the caller's user id, raising 401 otherwise. This is the
+backend equivalent of the Next.js `await auth()` session check.
+"""
+
 from functools import lru_cache
 
 import jwt

@@ -1,3 +1,11 @@
+"""FastAPI application entry point.
+
+Builds the `app`: initializes logging and (optionally) Sentry, applies CORS so
+the SPA's origin can call the API cross-origin, and mounts the feature routers
+(eBay OAuth/listing, user settings, media catalog). Exposes GET /health for
+uptime checks. Run with `uvicorn app.main:app`.
+"""
+
 import logging
 
 import sentry_sdk

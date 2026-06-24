@@ -24,6 +24,16 @@ const errorMessages: Record<string, string> = {
   callback_failed: "OAuth callback failed. Please try again.",
 }
 
+/**
+ * EbayConnect — the eBay OAuth connect/disconnect page.
+ *
+ * Inputs:  URL query params from the backend OAuth callback (?success=true or
+ *          ?error=<kind>), surfaced via errorMessages; plus a live connection
+ *          check (/api/ebay/check-connection) on mount.
+ * Outputs: a Connect button (fetches the authorize URL and redirects to eBay),
+ *          or, when connected, links to search/dashboard and a Disconnect &
+ *          Revoke action. Renders success/error banners from the callback.
+ */
 export default function EbayConnect() {
   const [searchParams] = useSearchParams()
   const [connecting, setConnecting] = useState(false)

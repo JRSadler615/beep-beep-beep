@@ -197,14 +197,14 @@ async def search_product(
             # form; empty string when the catalog has no value.
             for k, v in (catalog.get("dims") or {}).items():
                 fields[k] = "" if v is None else str(v)
-            product["dvdFields"] = fields
+            product["catalogFields"] = fields
             product["fromCatalog"] = True
         else:
             # No catalog: take the description from eBay's Best Match (top
             # result), else leave blank.
             best_match = with_images[0] if with_images else (items[0] if items else {})
             ebay_desc = best_match.get("shortDescription") or best_match.get("description") or ""
-            product["dvdFields"] = {
+            product["catalogFields"] = {
                 "type": "",
                 "year": "",
                 "description": ebay_desc,

@@ -8,6 +8,14 @@ import ProductSearch from "@/pages/ProductSearch"
 import Settings from "@/pages/Settings"
 import ProtectedRoute from "@/components/ProtectedRoute"
 
+/**
+ * App — the client-side route table for the SPA.
+ *
+ * Inputs:  none (reads the current URL via react-router).
+ * Outputs: the matched page element. Public routes (/, /login, /signup) render
+ *          directly; the rest are nested under <ProtectedRoute>, which gates on
+ *          a Supabase session and wraps them in the app shell (Navigation).
+ */
 export default function App() {
   return (
     <Routes>

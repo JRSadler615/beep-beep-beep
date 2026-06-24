@@ -1,9 +1,17 @@
 import { Link } from "react-router-dom"
 
 interface ProductSearchCardProps {
+  /** Whether the user's eBay account is connected — gates the card. */
   isConnected: boolean
 }
 
+/**
+ * ProductSearchCard — the dashboard tile that links to the product search page.
+ *
+ * Input:  isConnected — when false the card is dimmed, shows a "Locked" badge,
+ *         and the link is disabled (search requires a connected eBay account).
+ * Output: a clickable card linking to /product-search (or inert when locked).
+ */
 export default function ProductSearchCard({ isConnected }: ProductSearchCardProps) {
   return (
     <div className={`block bg-white dark:bg-gray-800 shadow rounded-lg p-6 ${isConnected ? 'hover:shadow-lg cursor-pointer' : 'opacity-60 cursor-not-allowed'} transition-shadow duration-200`}>

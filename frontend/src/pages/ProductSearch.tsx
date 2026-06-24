@@ -20,6 +20,23 @@ interface ProductData {
 
 type SearchType = "upc" | "title" | "any"
 
+/**
+ * ProductSearch — the core listing workflow page.
+ *
+ * Inputs:  a UPC (typed or barcode-scanned) and a selected media type; plus
+ *          user settings loaded on mount (SKU, banned keywords, discount, edit
+ *          mode, override description, seller note, offers, media-type
+ *          dimension defaults).
+ * Flow:    search eBay by UPC/title -> show a single priced result (mean of
+ *          comps) enriched from the matching in-house catalog -> let the user
+ *          edit fields, dimensions/weight, and photo -> list on eBay. On listing
+ *          it auto-maps item specifics (Format, title aspect, Artist, Genre),
+ *          validates genre against eBay's allowed values, and on success writes
+ *          the (possibly edited) details back to the media type's catalog.
+ * Outputs: an eBay listing (offer published) and catalog upserts; renders the
+ *          result card, edit controls, duplicate/floor warnings, and the
+ *          item-specifics / genre prompts when eBay needs more info.
+ */
 export default function ProductSearch() {
   const [upc, setUpc] = useState("")
   const [searchType, setSearchType] = useState<SearchType>("upc")
@@ -408,7 +425,7 @@ export default function ProductSearch() {
       // Otherwise, populate from product data
       // Note: If user has previously saved an override description, it will be in productData and will be preserved when they edit again
       // Populate DVD detail fields from the catalog (or eBay for the description)
-      const Media = data.dvdFields || {}
+      const Media = data.catalogFields || {}
       // On a catalog hit, use the catalog's stored type (DVD/Blu-ray/4k DVD);
       // otherwise default to the searched media type.
       setMediaType(data.fromCatalog ? (Media.type || searchMediaType || "DVD") : (searchMediaType || Media.type || ""))
@@ -628,7 +645,7 @@ export default function ProductSearch() {
 
   // Change the media type. Selecting a DVD-family type runs a catalog check
   // and, if the item is in the catalog, populates the fields from it.
-  // Set the dimension/weight fields from a catalog/dvdFields object, falling
+  // Set the dimension/weight fields from a catalogFields object, falling
   // back to the saved per-media-type defaults when the catalog has no value.
   const applyDimsFromFields = (f: Record<string, any>, mediaType: string) => {
     const def = mediaDefaults[mediaType] || {}
@@ -652,7 +669,7 @@ export default function ProductSearch() {
     if (!lookupUpc) return
     try {
       const res = await apiRequest(
-        `/api/catalog/dvd?upc=${encodeURIComponent(lookupUpc)}&mediaType=${encodeURIComponent(value)}`
+        `/api/catalog/media?upc=${encodeURIComponent(lookupUpc)}&mediaType=${encodeURIComponent(value)}`
       )
       const data = await res.json()
       if (res.ok && data.found) {
@@ -664,6 +681,7 @@ export default function ProductSearch() {
         if (f.genre) setMediaGenre(f.genre)
         if (f.rated) setMediaRated(f.rated)
         if (f.length) setMediaLength(f.length)
+        if (f.artist) setMediaArtist(f.artist)
         applyDimsFromFields(f, value)
       } else {
         // No catalog row — still apply this media type's defaults.
@@ -695,13 +713,13 @@ export default function ProductSearch() {
     }
   }
 
-  // Save the current item to the DVD catalog ("This is a DVD").
-  const saveToDvdCatalog = async () => {
+  // Save the current item to its media type's catalog.
+  const saveToCatalog = async () => {
     const catalogUpc = (upc || productData?.gtin || "").trim()
     const title = (editedTitle || productData?.title || "").trim()
     if (!catalogUpc || !title) return
     try {
-      await apiRequest("/api/catalog/dvd", {
+      await apiRequest("/api/catalog/media", {
         method: "POST",
         body: JSON.stringify({
           upc: catalogUpc,
@@ -714,6 +732,7 @@ export default function ProductSearch() {
           // If the genre was SKIP'd (eBay rejected it), persist a blank genre so
           // this item isn't re-prompted next time it's listed.
           genre: skipGenre ? "" : MediaGenre,
+          artist: MediaArtist,
           rated: MediaRated,
           length: MediaLength,
           height: MediaHeight,
@@ -1300,7 +1319,7 @@ export default function ProductSearch() {
       setListingSuccess(data.listingUrl || data.message || "Product listed successfully!")
       // If a DVD-family type, save/update the catalog with these details
       if (CATALOG_TYPES.includes(MediaType)) {
-        saveToDvdCatalog().catch(() => {})
+        saveToCatalog().catch(() => {})
       }
       // Capture the SKU that was used for this listing and calculate next SKU
       if (data.sku) {

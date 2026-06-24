@@ -1,3 +1,10 @@
+"""Supabase database client.
+
+Exposes a single service-role `supabase` client (and the cached `get_db`
+factory) used by every backend query. Because the service role bypasses RLS,
+callers must always scope queries by the authenticated user id.
+"""
+
 from functools import lru_cache
 
 from supabase import Client, create_client

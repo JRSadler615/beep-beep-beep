@@ -2,6 +2,13 @@ import { useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { useAuth } from "@/context/AuthContext"
 
+/**
+ * Signup — the account registration page.
+ *
+ * Inputs:  name/email/password form fields.
+ * Outputs: creates the account via Supabase (AuthContext.signUp); on success
+ *          navigates to /login?registered=true, otherwise renders the error.
+ */
 export default function Signup() {
   const navigate = useNavigate()
   const { signUp } = useAuth()

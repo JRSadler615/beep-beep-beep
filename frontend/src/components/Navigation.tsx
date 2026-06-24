@@ -1,6 +1,15 @@
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { useAuth } from "@/context/AuthContext"
 
+/**
+ * Navigation — the top nav bar for the authenticated app shell.
+ *
+ * Inputs:  none directly; pulls the current user and signOut from AuthContext
+ *          and the active path from react-router.
+ * Outputs: a <nav> with the brand link, the section links (highlighting the
+ *          active route), the signed-in email, and a Sign Out button that signs
+ *          out of Supabase and redirects home.
+ */
 export default function Navigation() {
   const { pathname } = useLocation()
   const navigate = useNavigate()

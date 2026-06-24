@@ -4,6 +4,14 @@ import { useAuth } from "@/context/AuthContext"
 import { apiFetch } from "@/lib/api"
 import ProductSearchCard from "@/components/ProductSearchCard"
 
+/**
+ * Dashboard — the authenticated landing page.
+ *
+ * Inputs:  the signed-in user (AuthContext); on mount it asks the backend
+ *          (/api/ebay/check-connection) whether the eBay account is linked.
+ * Outputs: a welcome panel plus two tiles — "Connect eBay Account" and the
+ *          ProductSearchCard (locked until eBay is connected).
+ */
 export default function Dashboard() {
   const { user } = useAuth()
   const [isConnected, setIsConnected] = useState(false)
