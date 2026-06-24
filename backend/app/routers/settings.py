@@ -396,6 +396,141 @@ def _policies_response(row: Optional[dict]) -> dict:
     return {camel: (row.get(col) if row else None) for camel, col in _POLICY_FIELDS.items()}
 
 
+# ---------------------------------------------------------------------------
+# Inventory location (ship-from address for eBay publishing)
+# ---------------------------------------------------------------------------
+
+
+class LocationUpdate(BaseModel):
+    addressLine1: Optional[str] = None
+    addressLine2: Optional[str] = None
+    city: Optional[str] = None
+    stateOrProvince: Optional[str] = None
+    postalCode: Optional[str] = None
+    country: Optional[str] = None
+    merchantLocationKey: Optional[str] = None
+
+
+def _location_response(row: Optional[dict]) -> dict:
+    if not row:
+        return {"location": None}
+    return {
+        "location": {
+            "merchantLocationKey": row["merchant_location_key"],
+            "addressLine1": row["address_line1"],
+            "addressLine2": row["address_line2"],
+            "city": row["city"],
+            "stateOrProvince": row["state_or_province"],
+            "postalCode": row["postal_code"],
+            "country": row["country"],
+        }
+    }
+
+
+@router.get("/location")
+def get_location(user_id: str = Depends(get_user_id)):
+    return _location_response(_fetch_one("ebay_inventory_location", user_id))
+
+
+@router.post("/location")
+def set_location(body: LocationUpdate, user_id: str = Depends(get_user_id)):
+    required = {
+        "addressLine1": body.addressLine1,
+        "city": body.city,
+        "stateOrProvince": body.stateOrProvince,
+        "postalCode": body.postalCode,
+    }
+    for field, value in required.items():
+        if not value or not value.strip():
+            raise HTTPException(status_code=400, detail=f"{field} is required")
+
+    address_line2 = body.addressLine2.strip() if body.addressLine2 and body.addressLine2.strip() else None
+    country = body.country.strip().upper() if body.country and body.country.strip() else "US"
+    key = (
+        body.merchantLocationKey.strip()
+        if body.merchantLocationKey and body.merchantLocationKey.strip()
+        else "default-location"
+    )
+
+    row = _upsert(
+        "ebay_inventory_location",
+        user_id,
+        {
+            "merchant_location_key": key,
+            "address_line1": body.addressLine1.strip(),
+            "address_line2": address_line2,
+            "city": body.city.strip(),
+            "state_or_province": body.stateOrProvince.strip(),
+            "postal_code": body.postalCode.strip(),
+            "country": country,
+        },
+    )
+    return {"success": True, **_location_response(row)}
+
+
+# ---------------------------------------------------------------------------
+# Per-media-type default package dimensions / weight
+# ---------------------------------------------------------------------------
+
+
+class MediaDefaultUpdate(BaseModel):
+    mediaType: str
+    height: Optional[float] = None
+    width: Optional[float] = None
+    depth: Optional[float] = None
+    dimensionUnits: Optional[str] = None
+    weight: Optional[float] = None
+    weightUnits: Optional[str] = None
+
+
+def _media_default_response(row: dict) -> dict:
+    return {
+        "mediaType": row["media_type"],
+        "height": row["height"],
+        "width": row["width"],
+        "depth": row["depth"],
+        "dimensionUnits": row["dimension_units"],
+        "weight": row["weight"],
+        "weightUnits": row["weight_units"],
+    }
+
+
+@router.get("/media-defaults")
+def get_media_defaults(user_id: str = Depends(get_user_id)):
+    """Return all per-media-type dimension/weight defaults for the user."""
+    res = (
+        supabase.table("media_type_dimension_defaults")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("media_type")
+        .execute()
+    )
+    return {"defaults": [_media_default_response(r) for r in (res.data or [])]}
+
+
+@router.post("/media-defaults")
+def set_media_defaults(body: MediaDefaultUpdate, user_id: str = Depends(get_user_id)):
+    if not body.mediaType or not body.mediaType.strip():
+        raise HTTPException(status_code=400, detail="mediaType is required")
+    payload = {
+        "user_id": user_id,
+        "media_type": body.mediaType.strip(),
+        "height": body.height,
+        "width": body.width,
+        "depth": body.depth,
+        "dimension_units": (body.dimensionUnits or None),
+        "weight": body.weight,
+        "weight_units": (body.weightUnits or None),
+    }
+    res = (
+        supabase.table("media_type_dimension_defaults")
+        .upsert(payload, on_conflict="user_id,media_type")
+        .execute()
+    )
+    row = (res.data or [payload])[0]
+    return {"success": True, **_media_default_response(row)}
+
+
 @router.get("/ebay-policies")
 def get_ebay_policies(user_id: str = Depends(get_user_id)):
     return _policies_response(_fetch_one("ebay_business_policies", user_id))

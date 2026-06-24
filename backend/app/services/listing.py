@@ -9,6 +9,7 @@ create_listing() returns (status_code, payload) so the route can return a
 JSONResponse with the matching status, preserving the Next.js response shapes.
 """
 
+import difflib
 import json
 import re
 
@@ -42,8 +43,158 @@ _CONDITION_MAP = {
 }
 
 
+# Media type -> eBay's required "Format" item specific. Mirrors the frontend
+# MEDIA_FORMAT_ASPECT map; used as a server-side safety net so Format is set
+# even if a listing is submitted without it.
+_MEDIA_FORMAT_ASPECT = {
+    "DVD": "DVD",
+    "Blu-ray": "Blu-ray",
+    "4k DVD": "4K UHD",
+    "CD": "CD",
+    "Cassette": "Cassette",
+    "VHS": "VHS",
+}
+
+# Media type -> the category's required "title" item specific. Its value is the
+# listing title. Video formats use "Movie/TV Title"; music uses "Release Title".
+_MEDIA_TITLE_ASPECT = {
+    "DVD": "Movie/TV Title",
+    "Blu-ray": "Movie/TV Title",
+    "4k DVD": "Movie/TV Title",
+    "VHS": "Movie/TV Title",
+    "CD": "Release Title",
+    "Cassette": "Release Title",
+}
+
+
 def map_condition_to_ebay(condition: str) -> str:
     return _CONDITION_MAP.get(condition, "NEW")
+
+
+def _num(value) -> float | None:
+    """Parse a numeric form value (str/number) to float, or None if blank/invalid."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def auto_adopt_aspects(defs: list, formatted_aspects: dict, text_src: str) -> list[str]:
+    """Feature 1: auto-fill item specifics from eBay's category data where we're
+    confident, so the user isn't prompted for them. Conservatively adopts:
+      - any aspect whose text-based guess matches an eBay allowed value
+        (high confidence — this is eBay's own suggested value),
+      - required aspects that have exactly one allowed value,
+      - required free-text aspects with a non-empty text guess.
+
+    Mutates `formatted_aspects` in place; returns the aspect names it filled.
+    """
+    existing = {k.lower() for k in formatted_aspects}
+    adopted: list[str] = []
+    for a in defs:
+        name = a.get("localizedAspectName") or a.get("aspectName")
+        if not name or name.lower() in existing:
+            continue
+        constraint = a.get("aspectConstraint", {}) or {}
+        required = constraint.get("aspectRequired") is True
+        mode = constraint.get("aspectMode")
+        allowed = [
+            (x.get("localizedValue") or x.get("value"))
+            for x in (a.get("aspectValues") or [])
+            if (x.get("localizedValue") or x.get("value"))
+        ]
+        guess = extract_aspect_value(name, text_src)
+        value = None
+        if allowed:
+            lower_map = {al.lower(): al for al in allowed}
+            if guess and guess.lower() in lower_map:
+                value = lower_map[guess.lower()]  # confident match -> canonical casing
+            elif required and len(allowed) == 1:
+                value = allowed[0]  # only one valid choice
+        elif required and mode != "SELECTION_ONLY" and guess:
+            value = guess  # required free-text aspect, best-effort guess
+        if value:
+            formatted_aspects[name] = [value]
+            existing.add(name.lower())
+            adopted.append(name)
+    return adopted
+
+
+def validate_genre_against_allowed(defs: list, formatted_aspects: dict | None) -> dict | None:
+    """Validate the listing's "Genre" item specific against eBay's allowed values.
+
+    - No Genre value, no Genre aspect, or a free-text Genre aspect -> returns None.
+    - Genre value matches an allowed value -> normalizes its casing in place, None.
+    - Otherwise -> returns {rejected, suggestion, allowed} so the caller can ask
+      the user "did you mean ...?".
+    """
+    if not formatted_aspects:
+        return None
+    genre_key = next((k for k in formatted_aspects if k.lower() == "genre"), None)
+    if not genre_key:
+        return None
+    vals = formatted_aspects.get(genre_key) or []
+    current = (vals[0] if isinstance(vals, list) and vals else "").strip()
+    if not current:
+        return None
+
+    gdef = next(
+        (a for a in defs if (a.get("localizedAspectName") or a.get("aspectName") or "").lower() == "genre"),
+        None,
+    )
+    if not gdef:
+        return None
+    allowed = [
+        (x.get("localizedValue") or x.get("value"))
+        for x in (gdef.get("aspectValues") or [])
+        if (x.get("localizedValue") or x.get("value"))
+    ]
+    mode = (gdef.get("aspectConstraint", {}) or {}).get("aspectMode")
+    # Only validate when eBay constrains Genre to a value list (not free text).
+    if not allowed or mode == "FREE_TEXT":
+        return None
+
+    lower_map = {a.lower(): a for a in allowed}
+    if current.lower() in lower_map:
+        formatted_aspects[genre_key] = [lower_map[current.lower()]]  # canonical casing
+        return None
+
+    match = difflib.get_close_matches(current, allowed, n=1, cutoff=0.4)
+    return {"rejected": current, "suggestion": match[0] if match else None, "allowed": allowed}
+
+
+def build_package_weight_and_size(dimensions: dict | None, weight: dict | None) -> dict | None:
+    """Map the form's dimensions/weight to eBay's packageWeightAndSize object.
+
+    eBay dimensions use height/length/width (depth -> length). Unit enums are the
+    uppercase form of the catalog values: INCH/CENTIMETER, OUNCE/POUND/GRAM/KILOGRAM.
+    Only emits a sub-object when it has the values eBay requires.
+    """
+    result: dict = {}
+
+    if isinstance(dimensions, dict):
+        h = _num(dimensions.get("height"))
+        w = _num(dimensions.get("width"))
+        d = _num(dimensions.get("depth"))
+        unit = (dimensions.get("unit") or "").strip().upper()
+        # eBay requires all three dimensions and a unit together.
+        if None not in (h, w, d) and unit:
+            result["dimensions"] = {
+                "height": h,
+                "length": d,  # depth maps to eBay's "length"
+                "width": w,
+                "unit": unit,
+            }
+
+    if isinstance(weight, dict):
+        value = _num(weight.get("value"))
+        unit = (weight.get("unit") or "").strip().upper()
+        if value is not None and unit:
+            result["weight"] = {"value": value, "unit": unit}
+
+    return result or None
 
 
 def extract_aspect_value(aspect_name: str, text: str) -> str | None:
@@ -196,6 +347,10 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
     additional_images = body.get("additionalImages")
     categories = body.get("categories")
     short_description = body.get("shortDescription")
+    dimensions = body.get("dimensions")  # {height, width, depth, unit}
+    weight = body.get("weight")  # {value, unit}
+    media_type = body.get("mediaType")  # for the Format aspect safety net
+    artist = body.get("artist")  # CD/Cassette only -> "Artist" item specific
 
     missing: list[str] = []
 
@@ -216,6 +371,7 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
     seller_note_settings = _fetch_one("seller_note_settings", user_id)
     offer_settings = _fetch_one("offer_settings", user_id)
     saved_policies = _fetch_one("ebay_business_policies", user_id)
+    saved_location = _fetch_one("ebay_inventory_location", user_id)
 
     seller_note = DEFAULT_SELLER_NOTE
     if seller_note_settings and seller_note_settings.get("enable_seller_note_editing"):
@@ -337,6 +493,31 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
         formatted_aspects = {"Brand": [brand.strip()]}
         product_obj["aspects"] = formatted_aspects
 
+    # Safety net: auto-fill required item specifics from the media type if the
+    # caller didn't already provide them (case-insensitive check).
+    #   - "Format"        <- media type (e.g. DVD, Blu-ray, 4K UHD)
+    #   - title aspect    <- listing title (e.g. "Movie/TV Title")
+    mt = (media_type or "").strip()
+    auto_aspects: list[tuple[str, str | None]] = [
+        ("Format", _MEDIA_FORMAT_ASPECT.get(mt)),
+        (_MEDIA_TITLE_ASPECT.get(mt) or "", (title or "").strip()[:65] if title else None),
+    ]
+    # Artist applies to music formats only (CD/Cassette).
+    if mt in ("CD", "Cassette") and artist and artist.strip():
+        auto_aspects.append(("Artist", artist.strip()[:65]))
+    for aspect_name, aspect_value in auto_aspects:
+        if not aspect_name or not aspect_value:
+            continue
+        if formatted_aspects is None:
+            formatted_aspects = {}
+        already_set = any(
+            k.lower() == aspect_name.lower() and formatted_aspects.get(k)
+            for k in formatted_aspects
+        )
+        if not already_set:
+            formatted_aspects[aspect_name] = [aspect_value]
+            product_obj["aspects"] = formatted_aspects
+
     # Final category
     final_category_id = category_id
     if not final_category_id and isinstance(categories, list) and categories:
@@ -356,6 +537,17 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
             )
             if v.status_code < 400:
                 defs = v.json().get("aspects", []) or []
+                text_src = short_description or description or title or ""
+
+                # Feature 1: auto-adopt eBay's suggested item specifics where we
+                # have a confident value, reducing how often the user is prompted.
+                if formatted_aspects is None:
+                    formatted_aspects = {}
+                adopted = auto_adopt_aspects(defs, formatted_aspects, text_src)
+                if adopted:
+                    product_obj["aspects"] = formatted_aspects
+                    debug_log("Auto-adopted item specifics:", adopted)
+
                 required = [
                     (a.get("localizedAspectName") or a.get("aspectName"))
                     for a in defs
@@ -375,7 +567,6 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
                         missing_aspects.append(req)
 
                 if missing_aspects:
-                    text_src = short_description or description or title or ""
                     defs_out = []
                     for ma in missing_aspects:
                         ad = next(
@@ -415,6 +606,29 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
                         "canRetry": False,
                         "aspectDefinitions": defs_out,
                     }
+
+                # Validate Genre against eBay's allowed values (after required
+                # aspects are satisfied). Returns a "did you mean" prompt if the
+                # value isn't accepted for a constrained Genre aspect.
+                genre_issue = validate_genre_against_allowed(defs, formatted_aspects)
+                if genre_issue:
+                    suggestion = genre_issue["suggestion"]
+                    hint = (
+                        f'Did you mean "{suggestion}"? If no, type SKIP to drop the genre.'
+                        if suggestion
+                        else "No close match found. Type SKIP to drop the genre, or enter an allowed value."
+                    )
+                    return 400, {
+                        "error": f'Genre "{genre_issue["rejected"]}" isn\'t an accepted '
+                        "eBay value for this category.",
+                        "action": "genre_suggestion",
+                        "genreRejectedValue": genre_issue["rejected"],
+                        "genreSuggestion": suggestion,
+                        "genreAllowedValues": genre_issue["allowed"],
+                        "categoryId": final_category_id,
+                        "hint": hint,
+                        "canRetry": False,
+                    }
         except Exception as e:  # noqa: BLE001
             print("Could not validate aspects (continuing):", e)
 
@@ -425,6 +639,9 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
             "availability": {"shipToLocationAvailability": {"quantity": 1}},
             "conditionDescription": seller_note,
         }
+        package = build_package_weight_and_size(dimensions, weight)
+        if package:
+            inventory_payload["packageWeightAndSize"] = package
         inv = await client.put(
             f"{base}/sell/inventory/v1/inventory_item/{sku}",
             headers=ebay_headers(access_token),
@@ -470,13 +687,53 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
         except Exception as e:  # noqa: BLE001
             print("Error fetching inventory locations:", e)
 
+        # No location on eBay yet — auto-create one from the user's saved address.
         if not merchant_location_key:
-            return 400, {
-                "error": "No inventory location found. Please set up your inventory location in eBay Seller Hub first.",
-                "hint": "Go to eBay Seller Hub -> Account -> Business Policies -> Locations and create a location.",
-                "needsSetup": True,
-                "setupUrl": "https://www.ebay.com/sh/locationsettings",
+            if not saved_location:
+                # eBay does not expose the account address via API, so the user
+                # must provide a ship-from address once (saved in app settings).
+                return 400, {
+                    "error": "No inventory location found. Please set up your inventory location first.",
+                    "hint": "Save your ship-from address in app settings and it will be created on eBay automatically.",
+                    "needsSetup": True,
+                    "needsAddress": True,
+                    "setupUrl": "https://www.ebay.com/sh/locationsettings",
+                }
+
+            desired_key = saved_location.get("merchant_location_key") or "default-location"
+            address: dict = {
+                "addressLine1": saved_location["address_line1"],
+                "city": saved_location["city"],
+                "stateOrProvince": saved_location["state_or_province"],
+                "postalCode": saved_location["postal_code"],
+                "country": saved_location.get("country") or "US",
             }
+            if saved_location.get("address_line2"):
+                address["addressLine2"] = saved_location["address_line2"]
+            location_payload = {
+                "location": {"address": address},
+                "locationTypes": ["WAREHOUSE"],
+                "name": "Default Location",
+                "merchantLocationStatus": "ENABLED",
+            }
+            create_loc = await client.post(
+                f"{base}/sell/inventory/v1/location/{desired_key}",
+                headers=ebay_headers(access_token),
+                content=json.dumps(location_payload),
+            )
+            # 204 = created; 409 = already exists (key is usable). Anything else fails.
+            if create_loc.status_code == 204 or create_loc.status_code == 409:
+                merchant_location_key = desired_key
+            else:
+                error_data, _ = _err(create_loc)
+                print("Failed to auto-create inventory location:", create_loc.status_code, error_data)
+                return 400, {
+                    "error": "Could not create your eBay inventory location automatically. Please verify your saved address.",
+                    "hint": "Check that the ship-from address in settings is complete and valid.",
+                    "needsSetup": True,
+                    "needsAddress": True,
+                    "rawEbayError": error_data,
+                }
 
         # Step 3: policies (saved preferences, else fetch first of each in parallel)
         fulfillment_policy_id = payment_policy_id = return_policy_id = "default"
@@ -656,11 +913,44 @@ async def _publish_and_finish(
         code = fe.get("errorId")
         params = fe.get("parameters") or []
 
+        # eBay sometimes returns 25002 not for a missing item specific but because
+        # the connected eBay account hasn't finished seller registration (payments
+        # / business setup). Detect that and return a clear, accurate message
+        # instead of a bogus "item specific" form.
+        haystack = f"{msg} {' '.join(str(p.get('value', '')) for p in params)}".lower()
+        if "seller's account" in haystack or "seller account" in haystack or "create a seller" in haystack:
+            return pub.status_code, {
+                "error": "Your eBay account isn't set up to sell yet. eBay requires you to "
+                "complete seller registration (including payments/business setup) before you "
+                "can list items.",
+                "errorCode": code,
+                "action": "seller_account_setup",
+                "needsSellerRegistration": True,
+                "setupUrl": "https://www.ebay.com/sl/sell",
+                "hint": "Complete seller registration on eBay, then try listing again. "
+                "This is an eBay account requirement, not a connection problem — your "
+                "account is still linked.",
+                "offerId": offer_id,
+                "sku": final_sku,
+                "details": error_data,
+                "rawEbayError": error_data,
+            }
+
         missing_list: list[str] = []
         if code == 25002:
-            for p in params:
-                if p.get("name") == "2" and p.get("value"):
-                    missing_list = [p["value"]]
+            # eBay's message is the reliable source for the aspect name, e.g.
+            # "The item specific Format is missing. Add Format to this listing..."
+            m = re.search(r"item specific\s+(.+?)\s+is missing", msg or "", re.IGNORECASE)
+            if m:
+                missing_list = [m.group(1).strip()]
+            else:
+                # Fallback: take the first non-numeric parameter value (the
+                # numeric params are positional indexes, not the aspect name).
+                for p in params:
+                    val = p.get("value")
+                    if val and not str(val).strip().isdigit():
+                        missing_list = [str(val).strip()]
+                        break
 
         defs_out: list[dict] = []
         if code == 25002 and missing_list:

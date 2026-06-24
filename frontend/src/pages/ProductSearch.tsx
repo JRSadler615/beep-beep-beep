@@ -51,6 +51,27 @@ export default function ProductSearch() {
   const [MediaGenre, setMediaGenre] = useState("")
   const [MediaRated, setMediaRated] = useState("")
   const [MediaLength, setMediaLength] = useState("")
+  // Artist — shown only for CD/Cassette; maps to eBay's "Artist" item specific.
+  // TODO: CDs/Cassettes have no in-house catalog yet. Wire this field to a music
+  // catalog lookup here when one exists; until then it auto-fills from eBay
+  // search data when available, otherwise stays blank for manual entry.
+  const [MediaArtist, setMediaArtist] = useState("")
+  // Genre validation: when eBay rejects the genre value, prompt "did you mean".
+  // skipGenre drops the genre from the aspect mapping for the retry.
+  const [skipGenre, setSkipGenre] = useState(false)
+  const [genreSuggestion, setGenreSuggestion] = useState<
+    { rejected: string; suggestion: string | null; allowedValues: string[] } | null
+  >(null)
+  const [genreInput, setGenreInput] = useState("")
+  // Package dimensions + weight (fill eBay's packageWeightAndSize)
+  const [MediaHeight, setMediaHeight] = useState("")
+  const [MediaWidth, setMediaWidth] = useState("")
+  const [MediaDepth, setMediaDepth] = useState("")
+  const [MediaDimUnit, setMediaDimUnit] = useState("inch")
+  const [MediaWeight, setMediaWeight] = useState("")
+  const [MediaWeightUnit, setMediaWeightUnit] = useState("ounce")
+  // Per-media-type default dimensions/weight, keyed by media type
+  const [mediaDefaults, setMediaDefaults] = useState<Record<string, any>>({})
   const [uploadingPhoto, setUploadingPhoto] = useState(false)
   // Shown when an exact UPC search finds nothing and we drop into manual entry
   const [noMatchWarning, setNoMatchWarning] = useState(false)
@@ -232,6 +253,24 @@ export default function ProductSearch() {
     }
     loadDiscountSettings()
 
+    // Fetch per-media-type dimension/weight defaults
+    const loadMediaDefaults = async () => {
+      try {
+        const res = await apiRequest("/api/settings/media-defaults")
+        if (res.ok) {
+          const data = await res.json()
+          const map: Record<string, any> = {}
+          for (const d of data.defaults || []) {
+            map[d.mediaType] = d
+          }
+          setMediaDefaults(map)
+        }
+      } catch (error) {
+        console.error("Failed to fetch media defaults:", error)
+      }
+    }
+    loadMediaDefaults()
+
     // Fetch edit mode settings
     const loadEditModeSettings = async () => {
       try {
@@ -337,6 +376,8 @@ export default function ProductSearch() {
           setMediaGenre("")
           setMediaRated("")
           setMediaLength("")
+          setMediaArtist("")
+          applyDimsFromFields({}, searchMediaType) // seed dims from defaults
           setIsMeanPrice(false)
           setIsEditing(true)
           setListingSuccess(null)
@@ -370,12 +411,20 @@ export default function ProductSearch() {
       const Media = data.dvdFields || {}
       // On a catalog hit, use the catalog's stored type (DVD/Blu-ray/4k DVD);
       // otherwise default to the searched media type.
-      setMediaType(data.fromCatalog ? (Media.type || "DVD") : (searchMediaType || Media.type || ""))
+      setMediaType(data.fromCatalog ? (Media.type || searchMediaType || "DVD") : (searchMediaType || Media.type || ""))
       setMediaYear(Media.year || "")
       setMediaPublisher(Media.publisher || "")
       setMediaGenre(Media.genre || "")
       setMediaRated(Media.rated || "")
       setMediaLength(Media.length || "")
+      // Artist: auto-fill from eBay/catalog search data if present, else blank.
+      setMediaArtist(Media.artist || "")
+      setSkipGenre(false)
+      setGenreSuggestion(null)
+      applyDimsFromFields(
+        Media,
+        data.fromCatalog ? (Media.type || searchMediaType || "DVD") : (searchMediaType || Media.type || "")
+      )
       setEditedDescription(
         useOverrideDescription
           ? ""
@@ -501,6 +550,15 @@ export default function ProductSearch() {
     setMediaGenre("")
     setMediaRated("")
     setMediaLength("")
+    setMediaArtist("")
+    setSkipGenre(false)
+    setGenreSuggestion(null)
+    setMediaHeight("")
+    setMediaWidth("")
+    setMediaDepth("")
+    setMediaDimUnit("inch")
+    setMediaWeight("")
+    setMediaWeightUnit("ounce")
     setNoMatchWarning(false)
 
     // After clearing, refocus UPC input so the next barcode scan goes straight into it
@@ -537,18 +595,65 @@ export default function ProductSearch() {
     VHS: "309",
   }
 
-  // Media types backed by the DVD catalog (catalog check + save behave alike).
-  const CATALOG_TYPES = ["DVD", "Blu-ray", "4k DVD"]
+  // eBay's required "Format" item specific, mapped from our media type. These
+  // values match eBay's accepted Format values for the categories above, so the
+  // listing publishes without prompting for Format. (Best-effort for non-DVD
+  // types; if eBay rejects a value the aspect form still appears as a fallback.)
+  const MEDIA_FORMAT_ASPECT: Record<string, string> = {
+    DVD: "DVD",
+    "Blu-ray": "Blu-ray",
+    "4k DVD": "4K UHD",
+    CD: "CD",
+    Cassette: "Cassette",
+    VHS: "VHS",
+  }
+
+  // The required "title" item specific differs by category. Video formats use
+  // "Movie/TV Title"; music formats use "Release Title". Its value is the
+  // listing title. Used to auto-fill so the listing publishes without prompting.
+  const MEDIA_TITLE_ASPECT: Record<string, string> = {
+    DVD: "Movie/TV Title",
+    "Blu-ray": "Movie/TV Title",
+    "4k DVD": "Movie/TV Title",
+    VHS: "Movie/TV Title",
+    CD: "Release Title",
+    Cassette: "Release Title",
+  }
+
+  // Media types backed by an in-house catalog (catalog check + save behave
+  // alike). Each maps to its own catalog table on the backend: DVD-family ->
+  // dvd_upc_catalog, CD -> cd_upc_catalog, VHS -> vhs_upc_catalog, Cassette ->
+  // cassette_upc_catalog.
+  const CATALOG_TYPES = ["DVD", "Blu-ray", "4k DVD", "CD", "VHS", "Cassette"]
 
   // Change the media type. Selecting a DVD-family type runs a catalog check
   // and, if the item is in the catalog, populates the fields from it.
+  // Set the dimension/weight fields from a catalog/dvdFields object, falling
+  // back to the saved per-media-type defaults when the catalog has no value.
+  const applyDimsFromFields = (f: Record<string, any>, mediaType: string) => {
+    const def = mediaDefaults[mediaType] || {}
+    const pick = (catalogVal: any, defVal: any): string => {
+      const v = (catalogVal ?? "").toString().trim()
+      if (v) return v
+      return defVal != null && defVal !== "" ? defVal.toString() : ""
+    }
+    setMediaHeight(pick(f.height, def.height))
+    setMediaWidth(pick(f.width, def.width))
+    setMediaDepth(pick(f.depth, def.depth))
+    setMediaDimUnit(pick(f.dimensionUnits, def.dimensionUnits) || "inch")
+    setMediaWeight(pick(f.weight, def.weight))
+    setMediaWeightUnit(pick(f.weightUnits, def.weightUnits) || "ounce")
+  }
+
   const handleMediaTypeChange = async (value: string) => {
     setMediaType(value)
     if (!CATALOG_TYPES.includes(value)) return
     const lookupUpc = (upc || productData?.gtin || "").trim()
     if (!lookupUpc) return
     try {
-      const res = await apiRequest(`/api/catalog/dvd?upc=${encodeURIComponent(lookupUpc)}`)
+      const res = await apiRequest(
+        `/api/catalog/dvd?upc=${encodeURIComponent(lookupUpc)}&mediaType=${encodeURIComponent(value)}`
+      )
       const data = await res.json()
       if (res.ok && data.found) {
         const f = data.fields || {}
@@ -559,6 +664,10 @@ export default function ProductSearch() {
         if (f.genre) setMediaGenre(f.genre)
         if (f.rated) setMediaRated(f.rated)
         if (f.length) setMediaLength(f.length)
+        applyDimsFromFields(f, value)
+      } else {
+        // No catalog row — still apply this media type's defaults.
+        applyDimsFromFields({}, value)
       }
     } catch {
       // Non-fatal: catalog check is best-effort
@@ -597,13 +706,22 @@ export default function ProductSearch() {
         body: JSON.stringify({
           upc: catalogUpc,
           title,
+          mediaType: MediaType,
           type: MediaType,
           year: MediaYear,
           description: editedDescription,
           publisher: MediaPublisher,
-          genre: MediaGenre,
+          // If the genre was SKIP'd (eBay rejected it), persist a blank genre so
+          // this item isn't re-prompted next time it's listed.
+          genre: skipGenre ? "" : MediaGenre,
           rated: MediaRated,
           length: MediaLength,
+          height: MediaHeight,
+          width: MediaWidth,
+          depth: MediaDepth,
+          dimensionUnits: MediaDimUnit,
+          weight: MediaWeight,
+          weightUnits: MediaWeightUnit,
           images: productData?.image?.imageUrl || null,
         }),
       })
@@ -743,7 +861,11 @@ export default function ProductSearch() {
     }
   }
   
-  const handleListOnEbay = async (additionalAspects?: Record<string, string>, bypassFloorWarning?: boolean) => {
+  const handleListOnEbay = async (
+    additionalAspects?: Record<string, string>,
+    bypassFloorWarning?: boolean,
+    genreOverride?: { skip?: boolean; value?: string },
+  ) => {
     if (!productData) return
 
     // Check if price hits floor and show warning dialog (unless bypassed)
@@ -840,7 +962,66 @@ export default function ProductSearch() {
         
         console.log("Final merged aspects:", mergedAspects)
       }
-      
+
+      // Auto-map Media Type -> eBay's required "Format" item specific so
+      // DVD-family (and other) listings publish without prompting for Format.
+      // Skip if the user already supplied a Format value.
+      const formatValue = MEDIA_FORMAT_ASPECT[MediaType]
+      const hasFormat = Object.keys(mergedAspects).some(
+        (k) => k.toLowerCase() === "format" && (mergedAspects[k] || []).length > 0
+      )
+      if (formatValue && !hasFormat) {
+        mergedAspects["Format"] = [formatValue]
+      }
+
+      // Auto-map the title item specific (e.g. "Movie/TV Title") to the listing
+      // title so it publishes without prompting. Skip if already supplied.
+      const titleAspectName = MEDIA_TITLE_ASPECT[MediaType]
+      // eBay caps item-specific values at 65 characters.
+      const titleAspectValue = (editedTitle || productData.title || "").trim().slice(0, 65)
+      if (titleAspectName && titleAspectValue) {
+        const hasTitleAspect = Object.keys(mergedAspects).some(
+          (k) => k.toLowerCase() === titleAspectName.toLowerCase() && (mergedAspects[k] || []).length > 0
+        )
+        if (!hasTitleAspect) {
+          mergedAspects[titleAspectName] = [titleAspectValue]
+        }
+      }
+
+      // Artist (CD/Cassette only) -> eBay's "Artist" item specific.
+      const artistValue = (MediaArtist || "").trim().slice(0, 65)
+      if ((MediaType === "CD" || MediaType === "Cassette") && artistValue) {
+        const hasArtist = Object.keys(mergedAspects).some(
+          (k) => k.toLowerCase() === "artist" && (mergedAspects[k] || []).length > 0
+        )
+        if (!hasArtist) {
+          mergedAspects["Artist"] = [artistValue]
+        }
+      }
+
+      // Map the product-details Genre -> eBay's "Genre" item specific. The
+      // backend validates it against eBay's allowed values. If the user chose to
+      // SKIP it after a "did you mean" prompt, drop it from the mapping.
+      // genreOverride lets the retry use the resolved value without waiting on
+      // React state to update.
+      let effectiveGenre = (MediaGenre || "").trim()
+      let effectiveSkipGenre = skipGenre
+      if (genreOverride?.skip) {
+        effectiveSkipGenre = true
+      } else if (genreOverride?.value !== undefined) {
+        effectiveGenre = genreOverride.value.trim()
+        effectiveSkipGenre = false
+      }
+      const genreValue = effectiveGenre.slice(0, 65)
+      if (genreValue && !effectiveSkipGenre) {
+        const hasGenre = Object.keys(mergedAspects).some(
+          (k) => k.toLowerCase() === "genre" && (mergedAspects[k] || []).length > 0
+        )
+        if (!hasGenre) {
+          mergedAspects["Genre"] = [genreValue]
+        }
+      }
+
       // Calculate discounted price for listing
       const listingPrice = editedPrice || productData.price?.value || "0.00"
       const priceInfo = calculateDiscountedPrice(listingPrice)
@@ -924,14 +1105,22 @@ export default function ProductSearch() {
           condition: editedCondition || "Used - Very Good",
           conditionDescription: conditionDescriptionToSend,
           
-          // Images - primary and additional
+          // Image: only the single item photo shown in the product search UI.
+          // The best-match listing's extra photos are intentionally NOT included.
           imageUrl: productData.image?.imageUrl || "",
-          additionalImages: productData.additionalImages || [],
+          additionalImages: [],
           
           // Category: prefer the eBay category mapped from the selected media
           // type, falling back to the Browse API category.
           categoryId: MEDIA_CATEGORY_IDS[MediaType] || productData.categoryId || "",
           categories: productData.categories || [],
+
+          // Selected media type — lets the backend auto-fill the Format aspect
+          // as a safety net if it isn't already present in aspects.
+          mediaType: MediaType,
+
+          // Artist (CD/Cassette) — backend safety net for the "Artist" specific.
+          artist: MediaArtist,
           
           // Product identifiers
           upc: upc || productData.gtin || "", // Pass the scanned UPC
@@ -951,9 +1140,21 @@ export default function ProductSearch() {
           
           // Short description (may contain Platform info)
           shortDescription: productData.shortDescription || "",
-          
+
           // Reference URL (for debugging/logging)
           itemWebUrl: productData.itemWebUrl || "",
+
+          // Package dimensions + weight -> eBay packageWeightAndSize
+          dimensions: {
+            height: MediaHeight,
+            width: MediaWidth,
+            depth: MediaDepth,
+            unit: MediaDimUnit,
+          },
+          weight: {
+            value: MediaWeight,
+            unit: MediaWeightUnit,
+          },
         }),
       })
       
@@ -1024,7 +1225,20 @@ export default function ProductSearch() {
           setListingLoading(false)
           return // Don't throw error, show form instead
         }
-        
+
+        // Genre value wasn't in eBay's allowed list -> offer a "did you mean".
+        if (data.action === "genre_suggestion") {
+          setGenreSuggestion({
+            rejected: data.genreRejectedValue || MediaGenre,
+            suggestion: data.genreSuggestion || null,
+            allowedValues: data.genreAllowedValues || [],
+          })
+          setGenreInput(data.genreSuggestion || "")
+          setListingError(null)
+          setListingLoading(false)
+          return
+        }
+
         // Log the error for debugging
         console.error("Listing error:", {
           status: response.status,
@@ -1142,6 +1356,21 @@ export default function ProductSearch() {
     
     // Retry listing with user-provided aspects
     handleListOnEbay(userProvidedAspects)
+  }
+
+  // Resolve the genre "did you mean" prompt: SKIP drops the genre, anything
+  // else is used as the genre value for the retry.
+  const handleResolveGenre = () => {
+    const val = genreInput.trim()
+    setGenreSuggestion(null)
+    if (val.toUpperCase() === "SKIP") {
+      setSkipGenre(true)
+      handleListOnEbay(undefined, undefined, { skip: true })
+    } else {
+      setMediaGenre(val)
+      setSkipGenre(false)
+      handleListOnEbay(undefined, undefined, { value: val })
+    }
   }
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -2213,6 +2442,19 @@ export default function ProductSearch() {
                           <option value="Cassette">Cassette</option>
                           <option value="Other">Other</option>
                         </select>
+                        {/* Artist: only for CD/Cassette. Maps to eBay's "Artist"
+                            item specific. TODO: connect to a music catalog when
+                            available; for now auto-fills from search or blank. */}
+                        {(MediaType === "CD" || MediaType === "Cassette") && (
+                          <input
+                            type="text"
+                            value={MediaArtist}
+                            onChange={(e) => setMediaArtist(e.target.value)}
+                            placeholder="Artist"
+                            aria-label="Artist"
+                            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                          />
+                        )}
                         {([
                           ["Release Year", MediaYear, setMediaYear],
                           ["Genre", MediaGenre, setMediaGenre],
@@ -2234,6 +2476,69 @@ export default function ProductSearch() {
                       </div>
                       <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                         Type sets the eBay category. Selecting "DVD" checks the in-house catalog and, on listing, saves these details to it. The fields combine with the description into the listing.
+                      </p>
+
+                      {/* Package dimensions + weight (fill eBay's shipping package) */}
+                      <h3 className="text-xs font-medium text-gray-500 dark:text-gray-400 mt-3 mb-2">
+                        Package Dimensions &amp; Weight
+                      </h3>
+                      <div className="grid grid-cols-4 gap-2">
+                        {([
+                          ["H", MediaHeight, setMediaHeight],
+                          ["W", MediaWidth, setMediaWidth],
+                          ["D", MediaDepth, setMediaDepth],
+                        ] as [string, string, (v: string) => void][]).map(
+                          ([label, val, setter]) => (
+                            <input
+                              key={label}
+                              type="number"
+                              min="0"
+                              step="any"
+                              inputMode="decimal"
+                              value={val}
+                              onChange={(e) => setter(e.target.value)}
+                              placeholder={label}
+                              aria-label={`${label} (dimension)`}
+                              className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                            />
+                          )
+                        )}
+                        <select
+                          value={MediaDimUnit}
+                          onChange={(e) => setMediaDimUnit(e.target.value)}
+                          aria-label="Dimension units"
+                          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                        >
+                          <option value="inch">inch</option>
+                          <option value="centimeter">centimeter</option>
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 mt-2">
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          inputMode="decimal"
+                          value={MediaWeight}
+                          onChange={(e) => setMediaWeight(e.target.value)}
+                          placeholder="Weight"
+                          aria-label="Weight"
+                          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                        />
+                        <select
+                          value={MediaWeightUnit}
+                          onChange={(e) => setMediaWeightUnit(e.target.value)}
+                          aria-label="Weight units"
+                          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
+                        >
+                          <option value="ounce">ounce</option>
+                          <option value="pound">pound</option>
+                          <option value="gram">gram</option>
+                          <option value="kilogram">kilogram</option>
+                        </select>
+                      </div>
+                      <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                        H / W / D and weight fill eBay's package size. Defaults come from the catalog, or your per-media-type defaults in Settings.
                       </p>
                     </div>
 
@@ -2443,6 +2748,56 @@ export default function ProductSearch() {
                       </div>
                     )}
                     
+                    {/* Genre "did you mean" prompt — eBay rejected the genre value */}
+                    {genreSuggestion && (
+                      <div className="mt-4 p-6 bg-blue-50 dark:bg-blue-900/20 border border-blue-400 dark:border-blue-700 rounded-lg">
+                        <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-2">Genre not recognized by eBay</h3>
+                        <p className="text-sm text-gray-700 dark:text-gray-300 mb-3">
+                          eBay doesn&apos;t accept the genre{" "}
+                          <span className="font-semibold">&ldquo;{genreSuggestion.rejected}&rdquo;</span> for this category.
+                          {genreSuggestion.suggestion
+                            ? <> Did you mean <span className="font-semibold">&ldquo;{genreSuggestion.suggestion}&rdquo;</span>?</>
+                            : <> No close match was found.</>}{" "}
+                          If no, please type <span className="font-mono font-semibold">SKIP</span> to drop the genre.
+                        </p>
+                        <div className="flex gap-3">
+                          {genreSuggestion.allowedValues.length > 0 ? (
+                            <input
+                              type="text"
+                              list="ebay-genre-values"
+                              value={genreInput}
+                              onChange={(e) => setGenreInput(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleResolveGenre() } }}
+                              aria-label="Genre value"
+                              className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={genreInput}
+                              onChange={(e) => setGenreInput(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleResolveGenre() } }}
+                              aria-label="Genre value"
+                              className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                            />
+                          )}
+                          <button
+                            onClick={handleResolveGenre}
+                            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors duration-200"
+                          >
+                            Continue
+                          </button>
+                        </div>
+                        {genreSuggestion.allowedValues.length > 0 && (
+                          <datalist id="ebay-genre-values">
+                            {genreSuggestion.allowedValues.map((v) => (
+                              <option key={v} value={v} />
+                            ))}
+                          </datalist>
+                        )}
+                      </div>
+                    )}
+
                     {/* Missing Item Specifics Form */}
                     {showAspectForm && missingAspects.length > 0 && (
                       <div className="mt-4 p-6 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-400 dark:border-yellow-700 rounded-lg">

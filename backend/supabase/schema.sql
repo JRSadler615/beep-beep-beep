@@ -117,6 +117,43 @@ create table if not exists public.offer_settings (
   updated_at           timestamptz not null default now()
 );
 
+-- ebay_inventory_location -----------------------------------------------------
+-- Ship-from address used to auto-create an eBay inventory location (required to
+-- publish offers). Entered once by the user; reused on every listing.
+create table if not exists public.ebay_inventory_location (
+  id                    uuid primary key default gen_random_uuid(),
+  user_id               uuid not null unique references auth.users(id) on delete cascade,
+  merchant_location_key text not null default 'default-location',
+  address_line1         text not null,
+  address_line2         text,
+  city                  text not null,
+  state_or_province     text not null,
+  postal_code           text not null,
+  country               text not null default 'US',
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now()
+);
+
+-- media_type_dimension_defaults -----------------------------------------------
+-- Per-media-type default package dimensions/weight, used to pre-fill the listing
+-- form when the catalog has no value for an item. One row per (user, media_type).
+create table if not exists public.media_type_dimension_defaults (
+  id                uuid primary key default gen_random_uuid(),
+  user_id           uuid not null references auth.users(id) on delete cascade,
+  media_type        text not null,
+  height            double precision,
+  width             double precision,
+  depth             double precision,
+  dimension_units   text,
+  weight            double precision,
+  weight_units      text,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now(),
+  unique (user_id, media_type)
+);
+create index if not exists media_type_dimension_defaults_user_id_idx
+  on public.media_type_dimension_defaults (user_id);
+
 -- updated_at triggers ---------------------------------------------------------
 do $$
 declare t text;
@@ -124,7 +161,8 @@ begin
   foreach t in array array[
     'ebay_tokens','sku_settings','ebay_business_policies','banned_keywords',
     'discount_settings','override_description_settings','edit_mode_settings',
-    'seller_note_settings','offer_settings'
+    'seller_note_settings','offer_settings','ebay_inventory_location',
+    'media_type_dimension_defaults'
   ] loop
     execute format('drop trigger if exists set_updated_at on public.%I', t);
     execute format(
@@ -167,7 +205,8 @@ begin
   foreach t in array array[
     'ebay_tokens','sku_settings','ebay_business_policies','banned_keywords',
     'discount_settings','override_description_settings','edit_mode_settings',
-    'seller_note_settings','offer_settings'
+    'seller_note_settings','offer_settings','ebay_inventory_location',
+    'media_type_dimension_defaults'
   ] loop
     execute format('alter table public.%I enable row level security', t);
     execute format('drop policy if exists owner_all on public.%I', t);

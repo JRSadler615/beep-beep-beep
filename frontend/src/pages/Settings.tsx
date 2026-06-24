@@ -73,6 +73,38 @@ export default function Settings() {
   const [loadingOfferSettings, setLoadingOfferSettings] = useState(false)
   const [savingOfferSettings, setSavingOfferSettings] = useState(false)
 
+  // Inventory Location state (ship-from address used for eBay publishing)
+  const [addressLine1, setAddressLine1] = useState<string>("")
+  const [addressLine2, setAddressLine2] = useState<string>("")
+  const [city, setCity] = useState<string>("")
+  const [stateOrProvince, setStateOrProvince] = useState<string>("")
+  const [postalCode, setPostalCode] = useState<string>("")
+  const [country, setCountry] = useState<string>("US")
+  const [loadingLocation, setLoadingLocation] = useState(false)
+  const [savingLocation, setSavingLocation] = useState(false)
+
+  // Per-media-type dimension/weight defaults
+  const MEDIA_TYPES = ["DVD", "Blu-ray", "4k DVD", "CD", "VHS", "Cassette", "Other"]
+  type MediaDefault = {
+    height: string
+    width: string
+    depth: string
+    dimensionUnits: string
+    weight: string
+    weightUnits: string
+  }
+  const emptyDefault: MediaDefault = {
+    height: "",
+    width: "",
+    depth: "",
+    dimensionUnits: "inch",
+    weight: "",
+    weightUnits: "ounce",
+  }
+  const [mediaDefaults, setMediaDefaults] = useState<Record<string, MediaDefault>>({})
+  const [loadingMediaDefaults, setLoadingMediaDefaults] = useState(false)
+  const [savingMediaType, setSavingMediaType] = useState<string | null>(null)
+
   // Fetch current settings on mount
   useEffect(() => {
     const fetchSettings = async () => {
@@ -278,6 +310,64 @@ export default function Settings() {
     }
 
     fetchOfferSettings()
+  }, [])
+
+  // Fetch inventory location on mount
+  useEffect(() => {
+    const fetchLocation = async () => {
+      try {
+        setLoadingLocation(true)
+        const res = await apiRequest("/api/settings/location")
+        if (res.ok) {
+          const data = await res.json()
+          if (data.location) {
+            setAddressLine1(data.location.addressLine1 || "")
+            setAddressLine2(data.location.addressLine2 || "")
+            setCity(data.location.city || "")
+            setStateOrProvince(data.location.stateOrProvince || "")
+            setPostalCode(data.location.postalCode || "")
+            setCountry(data.location.country || "US")
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch inventory location:", error)
+      } finally {
+        setLoadingLocation(false)
+      }
+    }
+
+    fetchLocation()
+  }, [])
+
+  // Fetch per-media-type dimension/weight defaults on mount
+  useEffect(() => {
+    const fetchMediaDefaults = async () => {
+      try {
+        setLoadingMediaDefaults(true)
+        const res = await apiRequest("/api/settings/media-defaults")
+        if (res.ok) {
+          const data = await res.json()
+          const map: Record<string, MediaDefault> = {}
+          for (const d of data.defaults || []) {
+            map[d.mediaType] = {
+              height: d.height != null ? String(d.height) : "",
+              width: d.width != null ? String(d.width) : "",
+              depth: d.depth != null ? String(d.depth) : "",
+              dimensionUnits: d.dimensionUnits || "inch",
+              weight: d.weight != null ? String(d.weight) : "",
+              weightUnits: d.weightUnits || "ounce",
+            }
+          }
+          setMediaDefaults(map)
+        }
+      } catch (error) {
+        console.error("Failed to fetch media defaults:", error)
+      } finally {
+        setLoadingMediaDefaults(false)
+      }
+    }
+
+    fetchMediaDefaults()
   }, [])
 
   // Fetch available policies when user clicks to load them
@@ -654,6 +744,104 @@ export default function Settings() {
     }
   }
 
+  const handleSaveLocation = async () => {
+    if (
+      !addressLine1.trim() ||
+      !city.trim() ||
+      !stateOrProvince.trim() ||
+      !postalCode.trim()
+    ) {
+      setMessage({
+        type: "error",
+        text: "Address line 1, city, state/province, and postal code are required",
+      })
+      return
+    }
+
+    setSavingLocation(true)
+    setMessage(null)
+
+    try {
+      const res = await apiRequest("/api/settings/location", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          addressLine1,
+          addressLine2,
+          city,
+          stateOrProvince,
+          postalCode,
+          country,
+        }),
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        setMessage({ type: "success", text: "✓ Inventory location saved successfully" })
+      } else {
+        const errorMsg = data.detail || data.error || "Failed to save inventory location"
+        setMessage({ type: "error", text: errorMsg })
+      }
+    } catch (error) {
+      setMessage({ type: "error", text: "Failed to save inventory location" })
+    } finally {
+      setSavingLocation(false)
+    }
+  }
+
+  const getMediaDefault = (mt: string): MediaDefault => mediaDefaults[mt] || emptyDefault
+
+  const updateMediaDefault = (mt: string, field: keyof MediaDefault, value: string) => {
+    setMediaDefaults((prev) => ({
+      ...prev,
+      [mt]: { ...(prev[mt] || emptyDefault), [field]: value },
+    }))
+  }
+
+  const handleSaveMediaDefault = async (mt: string) => {
+    const d = getMediaDefault(mt)
+    setSavingMediaType(mt)
+    setMessage(null)
+
+    const numOrNull = (v: string) => {
+      const t = v.trim()
+      if (!t) return null
+      const n = Number(t)
+      return Number.isNaN(n) ? null : n
+    }
+
+    try {
+      const res = await apiRequest("/api/settings/media-defaults", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mediaType: mt,
+          height: numOrNull(d.height),
+          width: numOrNull(d.width),
+          depth: numOrNull(d.depth),
+          dimensionUnits: d.dimensionUnits,
+          weight: numOrNull(d.weight),
+          weightUnits: d.weightUnits,
+        }),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setMessage({ type: "success", text: `✓ ${mt} defaults saved` })
+      } else {
+        setMessage({ type: "error", text: data.detail || data.error || "Failed to save defaults" })
+      }
+    } catch (error) {
+      setMessage({ type: "error", text: "Failed to save defaults" })
+    } finally {
+      setSavingMediaType(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -960,6 +1148,214 @@ export default function Settings() {
                       </button>
                     </div>
                   </div>
+            )}
+          </div>
+
+          {/* Inventory Location Card */}
+          <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mt-6">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              Inventory Location
+            </h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+              eBay requires a ship-from location to publish listings. Enter your address once and it will be created on eBay automatically and reused for every listing. eBay does not provide your account address through its API, so it must be entered here.
+            </p>
+
+            {loadingLocation ? (
+              <div className="text-center py-4">
+                <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">Loading inventory location...</p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* Address Line 1 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
+                    Address Line 1 <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={addressLine1}
+                    onChange={(e) => setAddressLine1(e.target.value)}
+                    placeholder="123 Main St"
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+
+                {/* Address Line 2 */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
+                    Address Line 2
+                  </label>
+                  <input
+                    type="text"
+                    value={addressLine2}
+                    onChange={(e) => setAddressLine2(e.target.value)}
+                    placeholder="Apt, suite, unit (optional)"
+                    className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+
+                {/* City + State */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
+                      City <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={city}
+                      onChange={(e) => setCity(e.target.value)}
+                      placeholder="City"
+                      className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
+                      State / Province <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={stateOrProvince}
+                      onChange={(e) => setStateOrProvince(e.target.value)}
+                      placeholder="e.g., CA"
+                      className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                  </div>
+                </div>
+
+                {/* Postal Code + Country */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
+                      Postal Code <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={postalCode}
+                      onChange={(e) => setPostalCode(e.target.value)}
+                      placeholder="e.g., 90210"
+                      className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
+                      Country
+                    </label>
+                    <input
+                      type="text"
+                      value={country}
+                      onChange={(e) => setCountry(e.target.value.toUpperCase())}
+                      placeholder="US"
+                      maxLength={2}
+                      className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Two-letter country code (e.g., US, CA, GB)
+                    </p>
+                  </div>
+                </div>
+
+                {/* Save Button */}
+                <div className="pt-4">
+                  <button
+                    onClick={handleSaveLocation}
+                    disabled={savingLocation}
+                    className="px-6 py-2 bg-gray-800 dark:bg-gray-700 text-white rounded-md hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {savingLocation ? "Saving..." : "Save Inventory Location"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Media Type Default Dimensions Card */}
+          <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mt-6">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              Default Dimensions &amp; Weight by Media Type
+            </h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+              Set standard package height, width, depth, and weight for each media type. These pre-fill the listing form when the catalog has no value for an item.
+            </p>
+
+            {loadingMediaDefaults ? (
+              <div className="text-center py-4">
+                <div className="inline-block animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">Loading defaults...</p>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {MEDIA_TYPES.map((mt) => {
+                  const d = getMediaDefault(mt)
+                  return (
+                    <div key={mt} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">{mt}</h3>
+                        <button
+                          onClick={() => handleSaveMediaDefault(mt)}
+                          disabled={savingMediaType === mt}
+                          className="px-4 py-1.5 text-sm bg-gray-800 dark:bg-gray-700 text-white rounded-md hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {savingMediaType === mt ? "Saving..." : "Save"}
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {([
+                          ["H", "height"],
+                          ["W", "width"],
+                          ["D", "depth"],
+                        ] as [string, keyof MediaDefault][]).map(([label, field]) => (
+                          <input
+                            key={field}
+                            type="number"
+                            min="0"
+                            step="any"
+                            inputMode="decimal"
+                            value={d[field]}
+                            onChange={(e) => updateMediaDefault(mt, field, e.target.value)}
+                            placeholder={label}
+                            aria-label={`${mt} ${label}`}
+                            className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          />
+                        ))}
+                        <select
+                          value={d.dimensionUnits}
+                          onChange={(e) => updateMediaDefault(mt, "dimensionUnits", e.target.value)}
+                          aria-label={`${mt} dimension units`}
+                          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        >
+                          <option value="inch">inch</option>
+                          <option value="centimeter">centimeter</option>
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 mt-2">
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          inputMode="decimal"
+                          value={d.weight}
+                          onChange={(e) => updateMediaDefault(mt, "weight", e.target.value)}
+                          placeholder="Weight"
+                          aria-label={`${mt} weight`}
+                          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                        <select
+                          value={d.weightUnits}
+                          onChange={(e) => updateMediaDefault(mt, "weightUnits", e.target.value)}
+                          aria-label={`${mt} weight units`}
+                          className="px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        >
+                          <option value="ounce">ounce</option>
+                          <option value="pound">pound</option>
+                          <option value="gram">gram</option>
+                          <option value="kilogram">kilogram</option>
+                        </select>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             )}
           </div>
 

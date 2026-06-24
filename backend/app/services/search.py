@@ -12,7 +12,7 @@ import re
 import httpx
 
 from app.config import settings
-from app.services.catalog import lookup_dvd_by_upc
+from app.services.catalog import catalog_table_for, lookup_catalog_by_upc
 from app.services.ebay_client import EbayTokenError, debug_log, get_valid_ebay_token
 
 # Media type -> eBay leaf category id (mirrors the frontend map). Used to
@@ -32,9 +32,6 @@ MEDIA_CATEGORY_IDS = {
 # scope each search to the single category matching the selected media type.
 # "Other" has no single category and is left unrestricted.
 ALLOWED_CATEGORY_IDS = ["617", "176984", "176983", "309", "11232", "11233"]
-
-# Media types backed by the DVD catalog (catalog check + save behave the same).
-CATALOG_TYPES = {"", "DVD", "Blu-ray", "4k DVD"}
 
 
 def _image_size_from_url(url: str | None) -> int:
@@ -104,9 +101,10 @@ async def search_product(
     # Scope to the media type's single eBay category (only "Other" has none).
     category_id = MEDIA_CATEGORY_IDS.get(media_type)
 
-    # Step 1: check the local catalog for DVD-family types (DVD/Blu-ray/4k DVD).
-    do_catalog = is_upc and media_type in CATALOG_TYPES
-    catalog = lookup_dvd_by_upc(value) if do_catalog else None
+    # Step 1: check the local catalog for the selected media type. Each media
+    # family (DVD/CD/VHS/Cassette) has its own catalog; "Other" has none.
+    do_catalog = is_upc and catalog_table_for(media_type) is not None
+    catalog = lookup_catalog_by_upc(value, media_type) if do_catalog else None
 
     # Step 2: choose the eBay query used to gather price comps + a photo.
     # On a catalog hit we search by the known Title (keyword) — far more
@@ -194,7 +192,12 @@ async def search_product(
         # description from eBay and leave the rest blank for the user to fill.
         if catalog:
             product["title"] = catalog.get("title") or product.get("title")
-            product["dvdFields"] = {k: (v or "") for k, v in catalog["fields"].items()}
+            fields = {k: (v or "") for k, v in catalog["fields"].items()}
+            # Dimension/weight fields: keep numeric values as strings for the
+            # form; empty string when the catalog has no value.
+            for k, v in (catalog.get("dims") or {}).items():
+                fields[k] = "" if v is None else str(v)
+            product["dvdFields"] = fields
             product["fromCatalog"] = True
         else:
             # No catalog: take the description from eBay's Best Match (top
@@ -209,6 +212,12 @@ async def search_product(
                 "genre": "",
                 "rated": "",
                 "length": "",
+                "height": "",
+                "width": "",
+                "depth": "",
+                "dimensionUnits": "",
+                "weight": "",
+                "weightUnits": "",
             }
             product["fromCatalog"] = False
 

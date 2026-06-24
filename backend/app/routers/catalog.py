@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app.auth import get_user_id
 from app.config import settings
-from app.services.catalog import lookup_dvd_by_upc, upsert_dvd
+from app.services.catalog import lookup_catalog_by_upc, upsert_catalog
 
 router = APIRouter(prefix="/api", tags=["catalog"])
 
@@ -24,6 +24,9 @@ _ALLOWED_EXT = {"jpg", "jpeg", "png", "webp", "gif"}
 class DvdCatalogEntry(BaseModel):
     upc: str
     title: str
+    # Which catalog to write (DVD/Blu-ray/4k DVD/CD/VHS/Cassette). Defaults to
+    # the DVD catalog for backward compatibility.
+    mediaType: str | None = None
     type: str | None = None
     year: str | None = None
     description: str | None = None
@@ -32,19 +35,33 @@ class DvdCatalogEntry(BaseModel):
     rated: str | None = None
     length: str | None = None
     images: str | None = None
+    # Package dimensions / weight (numbers sent as strings from the form).
+    height: str | None = None
+    width: str | None = None
+    depth: str | None = None
+    dimensionUnits: str | None = None
+    weight: str | None = None
+    weightUnits: str | None = None
 
 
 @router.get("/catalog/dvd")
-def get_dvd(upc: str = Query(...), user_id: str = Depends(get_user_id)):
-    """Look up a DVD in the catalog by UPC. Used when the user selects the
-    'DVD' media type so the form can auto-populate from the catalog."""
-    row = lookup_dvd_by_upc(upc)
+def get_dvd(
+    upc: str = Query(...),
+    mediaType: str = Query("DVD"),
+    user_id: str = Depends(get_user_id),
+):
+    """Look up an item in the media type's catalog by UPC. Used when the user
+    selects a catalog-backed media type so the form can auto-populate."""
+    row = lookup_catalog_by_upc(upc, mediaType)
     if not row:
         return {"found": False}
+    fields = {k: (v or "") for k, v in row["fields"].items()}
+    for k, v in (row.get("dims") or {}).items():
+        fields[k] = "" if v is None else str(v)
     return {
         "found": True,
         "title": row.get("title"),
-        "fields": {k: (v or "") for k, v in row["fields"].items()},
+        "fields": fields,
     }
 
 
@@ -64,7 +81,24 @@ def save_dvd(entry: DvdCatalogEntry, user_id: str = Depends(get_user_id)):
         "rated": entry.rated,
         "length": entry.length,
     }
-    row = upsert_dvd(entry.upc.strip(), entry.title.strip(), fields, entry.images)
+    dims = {
+        "height": entry.height,
+        "width": entry.width,
+        "depth": entry.depth,
+        "dimensionUnits": entry.dimensionUnits,
+        "weight": entry.weight,
+        "weightUnits": entry.weightUnits,
+    }
+    row = upsert_catalog(
+        entry.mediaType or "DVD",
+        entry.upc.strip(),
+        entry.title.strip(),
+        fields,
+        entry.images,
+        dims,
+    )
+    if row is None:
+        raise HTTPException(status_code=400, detail=f"No catalog for media type '{entry.mediaType}'")
     return {"success": True, "saved": row}
 
 
