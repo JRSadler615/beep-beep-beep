@@ -3,6 +3,13 @@ import { Link } from "react-router-dom"
 import { Html5QrcodeScanner } from "html5-qrcode"
 import { apiRequest } from "@/lib/api"
 import { removeKeywords, fetchBannedKeywords } from "@/lib/keyword-masker"
+import { DEFAULT_SELLER_NOTE } from "@/lib/constants"
+import {
+  MEDIA_CATEGORY_IDS,
+  MEDIA_FORMAT_ASPECT,
+  MEDIA_TITLE_ASPECT,
+  CATALOG_TYPES,
+} from "@/lib/media"
 
 interface ProductData {
   title?: string
@@ -140,8 +147,6 @@ export default function ProductSearch() {
   const [universalOverrideDescription, setUniversalOverrideDescription] = useState<string>("")
 
   // Seller note editing setting + per-listing edited value (only editable in Edit Mode)
-  const DEFAULT_SELLER_NOTE =
-    "Please note: any mention of a digital copy or code may be expired and/or unavailable. This does not affect the quality or functionality of the Product."
   const [enableSellerNoteEditing, setEnableSellerNoteEditing] = useState<boolean>(false)
   const [universalSellerNoteText, setUniversalSellerNoteText] = useState<string>(DEFAULT_SELLER_NOTE)
   
@@ -599,48 +604,6 @@ export default function ProductSearch() {
     if (!header) return desc
     return desc ? `${header}<br><br>\n${desc}` : header
   }
-
-  // Media type -> eBay leaf category id. DVD / Blu-ray / 4k DVD all live under
-  // "DVDs & Blu-ray Discs" (617).
-  const MEDIA_CATEGORY_IDS: Record<string, string> = {
-    DVD: "617",
-    "Blu-ray": "617",
-    "4k DVD": "617",
-    CD: "176984",
-    Cassette: "176983",
-    VHS: "309",
-  }
-
-  // eBay's required "Format" item specific, mapped from our media type. These
-  // values match eBay's accepted Format values for the categories above, so the
-  // listing publishes without prompting for Format. (Best-effort for non-DVD
-  // types; if eBay rejects a value the aspect form still appears as a fallback.)
-  const MEDIA_FORMAT_ASPECT: Record<string, string> = {
-    DVD: "DVD",
-    "Blu-ray": "Blu-ray",
-    "4k DVD": "4K UHD",
-    CD: "CD",
-    Cassette: "Cassette",
-    VHS: "VHS",
-  }
-
-  // The required "title" item specific differs by category. Video formats use
-  // "Movie/TV Title"; music formats use "Release Title". Its value is the
-  // listing title. Used to auto-fill so the listing publishes without prompting.
-  const MEDIA_TITLE_ASPECT: Record<string, string> = {
-    DVD: "Movie/TV Title",
-    "Blu-ray": "Movie/TV Title",
-    "4k DVD": "Movie/TV Title",
-    VHS: "Movie/TV Title",
-    CD: "Release Title",
-    Cassette: "Release Title",
-  }
-
-  // Media types backed by an in-house catalog (catalog check + save behave
-  // alike). Each maps to its own catalog table on the backend: DVD-family ->
-  // dvd_upc_catalog, CD -> cd_upc_catalog, VHS -> vhs_upc_catalog, Cassette ->
-  // cassette_upc_catalog.
-  const CATALOG_TYPES = ["DVD", "Blu-ray", "4k DVD", "CD", "VHS", "Cassette"]
 
   // Change the media type. Selecting a DVD-family type runs a catalog check
   // and, if the item is in the catalog, populates the fields from it.

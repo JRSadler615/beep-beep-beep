@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react"
 import { Link } from "react-router-dom"
 import { apiRequest } from "@/lib/api"
+import { DEFAULT_SELLER_NOTE } from "@/lib/constants"
 
 interface Policy {
   id: string
@@ -74,9 +75,7 @@ export default function Settings() {
 
   // Seller Note Editing Settings state
   const [enableSellerNoteEditing, setEnableSellerNoteEditing] = useState<boolean>(false)
-  const [sellerNoteText, setSellerNoteText] = useState<string>(
-    "Please note: any mention of a digital copy or code may be expired and/or unavailable. This does not affect the quality or functionality of the DVD."
-  )
+  const [sellerNoteText, setSellerNoteText] = useState<string>(DEFAULT_SELLER_NOTE)
   const [loadingSellerNoteEditing, setLoadingSellerNoteEditing] = useState(false)
   const [savingSellerNoteEditing, setSavingSellerNoteEditing] = useState(false)
 
@@ -118,25 +117,176 @@ export default function Settings() {
   const [loadingMediaDefaults, setLoadingMediaDefaults] = useState(false)
   const [savingMediaType, setSavingMediaType] = useState<string | null>(null)
 
-  // Fetch current settings on mount
-  useEffect(() => {
-    const fetchSettings = async () => {
-      try {
-        const res = await apiRequest("/api/settings/sku")
-        if (res.ok) {
-          const data = await res.json()
-          setNextSkuCounter(data.nextSkuCounter || 1)
-          setSkuPrefix(data.skuPrefix)
-          setPrefixInput(data.skuPrefix || "")
-        }
-      } catch (error) {
-        console.error("Failed to fetch SKU settings:", error)
-      } finally {
-        setLoading(false)
-      }
-    }
+  // ---- Shared load/save helpers -------------------------------------------
+  // Every settings card repeated the same GET-then-apply and POST-then-toast
+  // boilerplate; these collapse that into one place. `begin`/`end` toggle the
+  // card's own loading/saving flag; `apply`/`onOk` do the card-specific work.
 
-    fetchSettings()
+  /** GET a settings endpoint and apply the JSON on success; soft-fail on error. */
+  const loadSetting = async (
+    path: string,
+    apply: (data: any) => void,
+    opts: { begin?: () => void; end?: () => void; label?: string } = {}
+  ): Promise<void> => {
+    opts.begin?.()
+    try {
+      const res = await apiRequest(path)
+      if (res.ok) apply(await res.json())
+    } catch (error) {
+      console.error(`Failed to fetch ${opts.label || path}:`, error)
+    } finally {
+      opts.end?.()
+    }
+  }
+
+  // Backend error bodies come in two shapes: validation errors use `detail`
+  // (FastAPI), handler errors use `error` (+ optional `details`).
+  const detailsError = (data: any, failText: string) =>
+    data.details ? `${data.error}: ${data.details}` : data.error || failText
+  const detailError = (data: any, failText: string) =>
+    data.detail || data.error || failText
+
+  /** POST a settings endpoint and show a success/error toast. */
+  const postSetting = async (
+    path: string,
+    body: unknown,
+    opts: {
+      successText: string
+      failText: string
+      begin?: () => void
+      end?: () => void
+      onOk?: (data: any) => void
+      extractError?: (data: any, failText: string) => string
+    }
+  ): Promise<void> => {
+    opts.begin?.()
+    setMessage(null)
+    try {
+      const res = await apiRequest(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (res.ok) {
+        setMessage({ type: "success", text: opts.successText })
+        opts.onOk?.(data)
+      } else {
+        setMessage({
+          type: "error",
+          text: (opts.extractError || detailsError)(data, opts.failText),
+        })
+      }
+    } catch {
+      setMessage({ type: "error", text: opts.failText })
+    } finally {
+      opts.end?.()
+    }
+  }
+
+  // Fetch all the independent settings cards on mount (eBay connection +
+  // policies is handled separately below because it has bespoke error UI).
+  useEffect(() => {
+    loadSetting(
+      "/api/settings/sku",
+      (data) => {
+        setNextSkuCounter(data.nextSkuCounter || 1)
+        setSkuPrefix(data.skuPrefix)
+        setPrefixInput(data.skuPrefix || "")
+      },
+      { end: () => setLoading(false), label: "SKU settings" }
+    )
+
+    loadSetting(
+      "/api/settings/banned-keywords",
+      (data) => setBannedKeywords(data.keywords || []),
+      { begin: () => setLoadingKeywords(true), end: () => setLoadingKeywords(false), label: "banned keywords" }
+    )
+
+    loadSetting(
+      "/api/settings/discount",
+      (data) => {
+        setDiscountAmount(data.discountAmount || 3.0)
+        setMinimumPrice(data.minimumPrice || 4.0)
+      },
+      { begin: () => setLoadingDiscount(true), end: () => setLoadingDiscount(false), label: "discount settings" }
+    )
+
+    loadSetting(
+      "/api/settings/edit-mode",
+      (data) => setDefaultEditMode(data.defaultEditMode || false),
+      { begin: () => setLoadingEditMode(true), end: () => setLoadingEditMode(false), label: "edit mode settings" }
+    )
+
+    loadSetting(
+      "/api/settings/override-description",
+      (data) => {
+        setUseOverrideDescription(data.useOverrideDescription || false)
+        setOverrideDescription(data.overrideDescription || "")
+      },
+      {
+        begin: () => setLoadingOverrideDescription(true),
+        end: () => setLoadingOverrideDescription(false),
+        label: "override description settings",
+      }
+    )
+
+    loadSetting(
+      "/api/settings/seller-note",
+      (data) => {
+        setEnableSellerNoteEditing(data.enableSellerNoteEditing || false)
+        setSellerNoteText(data.sellerNoteText || "")
+      },
+      {
+        begin: () => setLoadingSellerNoteEditing(true),
+        end: () => setLoadingSellerNoteEditing(false),
+        label: "seller note editing settings",
+      }
+    )
+
+    loadSetting(
+      "/api/settings/offers",
+      (data) => {
+        setAllowOffers(data.allowOffers || false)
+        setMinimumOfferAmount(data.minimumOfferAmount || 10.0)
+      },
+      { begin: () => setLoadingOfferSettings(true), end: () => setLoadingOfferSettings(false), label: "offer settings" }
+    )
+
+    loadSetting(
+      "/api/settings/location",
+      (data) => {
+        if (data.location) {
+          setAddressLine1(data.location.addressLine1 || "")
+          setAddressLine2(data.location.addressLine2 || "")
+          setCity(data.location.city || "")
+          setStateOrProvince(data.location.stateOrProvince || "")
+          setPostalCode(data.location.postalCode || "")
+          setCountry(data.location.country || "US")
+        }
+      },
+      { begin: () => setLoadingLocation(true), end: () => setLoadingLocation(false), label: "inventory location" }
+    )
+
+    loadSetting(
+      "/api/settings/media-defaults",
+      (data) => {
+        const map: Record<string, MediaDefault> = {}
+        for (const d of data.defaults || []) {
+          map[d.mediaType] = {
+            height: d.height != null ? String(d.height) : "",
+            width: d.width != null ? String(d.width) : "",
+            depth: d.depth != null ? String(d.depth) : "",
+            dimensionUnits: d.dimensionUnits || "inch",
+            weight: d.weight != null ? String(d.weight) : "",
+            weightUnits: d.weightUnits || "ounce",
+          }
+        }
+        setMediaDefaults(map)
+      },
+      { begin: () => setLoadingMediaDefaults(true), end: () => setLoadingMediaDefaults(false), label: "media defaults" }
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Check if eBay is connected and fetch saved policies
@@ -199,188 +349,6 @@ export default function Settings() {
     }
 
     checkEbayConnection()
-  }, [])
-
-  // Fetch banned keywords on mount
-  useEffect(() => {
-    const fetchBannedKeywords = async () => {
-      try {
-        setLoadingKeywords(true)
-        const res = await apiRequest("/api/settings/banned-keywords")
-        if (res.ok) {
-          const data = await res.json()
-          setBannedKeywords(data.keywords || [])
-        }
-      } catch (error) {
-        console.error("Failed to fetch banned keywords:", error)
-      } finally {
-        setLoadingKeywords(false)
-      }
-    }
-
-    fetchBannedKeywords()
-  }, [])
-
-  // Fetch discount settings on mount
-  useEffect(() => {
-    const fetchDiscountSettings = async () => {
-      try {
-        setLoadingDiscount(true)
-        const res = await apiRequest("/api/settings/discount")
-        if (res.ok) {
-          const data = await res.json()
-          setDiscountAmount(data.discountAmount || 3.0)
-          setMinimumPrice(data.minimumPrice || 4.0)
-        }
-      } catch (error) {
-        console.error("Failed to fetch discount settings:", error)
-      } finally {
-        setLoadingDiscount(false)
-      }
-    }
-
-    fetchDiscountSettings()
-  }, [])
-
-  // Fetch edit mode settings on mount
-  useEffect(() => {
-    const fetchEditModeSettings = async () => {
-      try {
-        setLoadingEditMode(true)
-        const res = await apiRequest("/api/settings/edit-mode")
-        if (res.ok) {
-          const data = await res.json()
-          setDefaultEditMode(data.defaultEditMode || false)
-        }
-      } catch (error) {
-        console.error("Failed to fetch edit mode settings:", error)
-      } finally {
-        setLoadingEditMode(false)
-      }
-    }
-
-    fetchEditModeSettings()
-  }, [])
-
-  // Fetch override description settings on mount
-  useEffect(() => {
-    const fetchOverrideDescriptionSettings = async () => {
-      try {
-        setLoadingOverrideDescription(true)
-        const res = await apiRequest("/api/settings/override-description")
-        if (res.ok) {
-          const data = await res.json()
-          setUseOverrideDescription(data.useOverrideDescription || false)
-          setOverrideDescription(data.overrideDescription || "")
-        }
-      } catch (error) {
-        console.error("Failed to fetch override description settings:", error)
-      } finally {
-        setLoadingOverrideDescription(false)
-      }
-    }
-
-    fetchOverrideDescriptionSettings()
-  }, [])
-
-  // Fetch seller note editing settings on mount
-  useEffect(() => {
-    const fetchSellerNoteEditingSettings = async () => {
-      try {
-        setLoadingSellerNoteEditing(true)
-        const res = await apiRequest("/api/settings/seller-note")
-        if (res.ok) {
-          const data = await res.json()
-          setEnableSellerNoteEditing(data.enableSellerNoteEditing || false)
-          setSellerNoteText(data.sellerNoteText || "")
-        }
-      } catch (error) {
-        console.error("Failed to fetch seller note editing settings:", error)
-      } finally {
-        setLoadingSellerNoteEditing(false)
-      }
-    }
-
-    fetchSellerNoteEditingSettings()
-  }, [])
-
-  // Fetch offer settings on mount
-  useEffect(() => {
-    const fetchOfferSettings = async () => {
-      try {
-        setLoadingOfferSettings(true)
-        const res = await apiRequest("/api/settings/offers")
-        if (res.ok) {
-          const data = await res.json()
-          setAllowOffers(data.allowOffers || false)
-          setMinimumOfferAmount(data.minimumOfferAmount || 10.0)
-        }
-      } catch (error) {
-        console.error("Failed to fetch offer settings:", error)
-      } finally {
-        setLoadingOfferSettings(false)
-      }
-    }
-
-    fetchOfferSettings()
-  }, [])
-
-  // Fetch inventory location on mount
-  useEffect(() => {
-    const fetchLocation = async () => {
-      try {
-        setLoadingLocation(true)
-        const res = await apiRequest("/api/settings/location")
-        if (res.ok) {
-          const data = await res.json()
-          if (data.location) {
-            setAddressLine1(data.location.addressLine1 || "")
-            setAddressLine2(data.location.addressLine2 || "")
-            setCity(data.location.city || "")
-            setStateOrProvince(data.location.stateOrProvince || "")
-            setPostalCode(data.location.postalCode || "")
-            setCountry(data.location.country || "US")
-          }
-        }
-      } catch (error) {
-        console.error("Failed to fetch inventory location:", error)
-      } finally {
-        setLoadingLocation(false)
-      }
-    }
-
-    fetchLocation()
-  }, [])
-
-  // Fetch per-media-type dimension/weight defaults on mount
-  useEffect(() => {
-    const fetchMediaDefaults = async () => {
-      try {
-        setLoadingMediaDefaults(true)
-        const res = await apiRequest("/api/settings/media-defaults")
-        if (res.ok) {
-          const data = await res.json()
-          const map: Record<string, MediaDefault> = {}
-          for (const d of data.defaults || []) {
-            map[d.mediaType] = {
-              height: d.height != null ? String(d.height) : "",
-              width: d.width != null ? String(d.width) : "",
-              depth: d.depth != null ? String(d.depth) : "",
-              dimensionUnits: d.dimensionUnits || "inch",
-              weight: d.weight != null ? String(d.weight) : "",
-              weightUnits: d.weightUnits || "ounce",
-            }
-          }
-          setMediaDefaults(map)
-        }
-      } catch (error) {
-        console.error("Failed to fetch media defaults:", error)
-      } finally {
-        setLoadingMediaDefaults(false)
-      }
-    }
-
-    fetchMediaDefaults()
   }, [])
 
   // Fetch available policies when user clicks to load them
@@ -447,102 +415,50 @@ export default function Settings() {
       return
     }
 
-    setSavingCounter(true)
-    setMessage(null)
-
-    try {
-      const res = await apiRequest("/api/settings/sku/counter", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ initialSku: counter }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
+    await postSetting("/api/settings/sku/counter", { nextSkuCounter: counter }, {
+      successText: "✓ SKU configured successfully",
+      failText: "Failed to save SKU counter",
+      begin: () => setSavingCounter(true),
+      end: () => setSavingCounter(false),
+      onOk: (data) => {
         setNextSkuCounter(data.nextSkuCounter)
         setInitialSkuInput("")
-        setMessage({ type: "success", text: "✓ SKU configured successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save SKU counter")
-        setMessage({ type: "error", text: errorMsg })
-      }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save SKU counter" })
-    } finally {
-      setSavingCounter(false)
-    }
+      },
+    })
   }
 
-  const handleSavePrefix = async () => {
-    setSavingPrefix(true)
-    setMessage(null)
+  const handleSavePrefix = () =>
+    postSetting("/api/settings/sku/prefix", { skuPrefix: prefixInput }, {
+      successText: "✓ Prefix configured successfully",
+      failText: "Failed to save prefix",
+      begin: () => setSavingPrefix(true),
+      end: () => setSavingPrefix(false),
+      onOk: (data) => setSkuPrefix(data.skuPrefix),
+    })
 
-    try {
-      const res = await apiRequest("/api/settings/sku/prefix", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ prefix: prefixInput }),
-      })
+  const handleSavePolicies = () => {
+    // Resolve the selected policy names to store alongside their ids.
+    const paymentPolicy = availablePolicies?.paymentPolicies.find(p => p.id === selectedPaymentPolicy)
+    const returnPolicy = availablePolicies?.returnPolicies.find(p => p.id === selectedReturnPolicy)
+    const fulfillmentPolicy = availablePolicies?.fulfillmentPolicies.find(p => p.id === selectedFulfillmentPolicy)
 
-      const data = await res.json()
-
-      if (res.ok) {
-        setSkuPrefix(data.skuPrefix)
-        setMessage({ type: "success", text: "✓ Prefix configured successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save prefix")
-        setMessage({ type: "error", text: errorMsg })
+    return postSetting(
+      "/api/settings/ebay-policies",
+      {
+        paymentPolicyId: selectedPaymentPolicy || null,
+        paymentPolicyName: paymentPolicy?.name || null,
+        returnPolicyId: selectedReturnPolicy || null,
+        returnPolicyName: returnPolicy?.name || null,
+        fulfillmentPolicyId: selectedFulfillmentPolicy || null,
+        fulfillmentPolicyName: fulfillmentPolicy?.name || null,
+      },
+      {
+        successText: "✓ eBay policies configured successfully",
+        failText: "Failed to save eBay policies",
+        begin: () => setSavingPolicies(true),
+        end: () => setSavingPolicies(false),
       }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save prefix" })
-    } finally {
-      setSavingPrefix(false)
-    }
-  }
-
-  const handleSavePolicies = async () => {
-    setSavingPolicies(true)
-    setMessage(null)
-
-    try {
-      // Find the selected policy names
-      const paymentPolicy = availablePolicies?.paymentPolicies.find(p => p.id === selectedPaymentPolicy)
-      const returnPolicy = availablePolicies?.returnPolicies.find(p => p.id === selectedReturnPolicy)
-      const fulfillmentPolicy = availablePolicies?.fulfillmentPolicies.find(p => p.id === selectedFulfillmentPolicy)
-
-      const res = await apiRequest("/api/settings/ebay-policies", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          paymentPolicyId: selectedPaymentPolicy || null,
-          paymentPolicyName: paymentPolicy?.name || null,
-          returnPolicyId: selectedReturnPolicy || null,
-          returnPolicyName: returnPolicy?.name || null,
-          fulfillmentPolicyId: selectedFulfillmentPolicy || null,
-          fulfillmentPolicyName: fulfillmentPolicy?.name || null,
-        }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setMessage({ type: "success", text: "✓ eBay policies configured successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save policies")
-        setMessage({ type: "error", text: errorMsg })
-      }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save eBay policies" })
-    } finally {
-      setSavingPolicies(false)
-    }
+    )
   }
 
   const handleAddKeyword = async () => {
@@ -603,159 +519,53 @@ export default function Settings() {
     }
   }
 
-  const handleSaveDiscountSettings = async () => {
-    setSavingDiscount(true)
-    setMessage(null)
+  const handleSaveDiscountSettings = () =>
+    postSetting("/api/settings/discount", { discountAmount, minimumPrice }, {
+      successText: "✓ Discount settings saved successfully",
+      failText: "Failed to save discount settings",
+      begin: () => setSavingDiscount(true),
+      end: () => setSavingDiscount(false),
+    })
 
-    try {
-      const res = await apiRequest("/api/settings/discount", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          discountAmount: discountAmount,
-          minimumPrice: minimumPrice,
-        }),
-      })
+  const handleSaveEditModeSettings = () =>
+    postSetting("/api/settings/edit-mode", { defaultEditMode }, {
+      successText: "✓ Edit mode settings saved successfully",
+      failText: "Failed to save edit mode settings",
+      begin: () => setSavingEditMode(true),
+      end: () => setSavingEditMode(false),
+    })
 
-      const data = await res.json()
-
-      if (res.ok) {
-        setMessage({ type: "success", text: "✓ Discount settings saved successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save discount settings")
-        setMessage({ type: "error", text: errorMsg })
+  const handleSaveOverrideDescriptionSettings = () =>
+    postSetting(
+      "/api/settings/override-description",
+      { useOverrideDescription, overrideDescription },
+      {
+        successText: "✓ Override description settings saved successfully",
+        failText: "Failed to save override description settings",
+        begin: () => setSavingOverrideDescription(true),
+        end: () => setSavingOverrideDescription(false),
       }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save discount settings" })
-    } finally {
-      setSavingDiscount(false)
-    }
-  }
+    )
 
-  const handleSaveEditModeSettings = async () => {
-    setSavingEditMode(true)
-    setMessage(null)
-
-    try {
-      const res = await apiRequest("/api/settings/edit-mode", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          defaultEditMode: defaultEditMode,
-        }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setMessage({ type: "success", text: "✓ Edit mode settings saved successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save edit mode settings")
-        setMessage({ type: "error", text: errorMsg })
+  const handleSaveSellerNoteEditingSettings = () =>
+    postSetting(
+      "/api/settings/seller-note",
+      { enableSellerNoteEditing, sellerNoteText },
+      {
+        successText: "✓ Seller note editing setting saved successfully",
+        failText: "Failed to save seller note editing setting",
+        begin: () => setSavingSellerNoteEditing(true),
+        end: () => setSavingSellerNoteEditing(false),
       }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save edit mode settings" })
-    } finally {
-      setSavingEditMode(false)
-    }
-  }
+    )
 
-  const handleSaveOverrideDescriptionSettings = async () => {
-    setSavingOverrideDescription(true)
-    setMessage(null)
-
-    try {
-      const res = await apiRequest("/api/settings/override-description", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          useOverrideDescription: useOverrideDescription,
-          overrideDescription: overrideDescription,
-        }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setMessage({ type: "success", text: "✓ Override description settings saved successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save override description settings")
-        setMessage({ type: "error", text: errorMsg })
-      }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save override description settings" })
-    } finally {
-      setSavingOverrideDescription(false)
-    }
-  }
-
-  const handleSaveSellerNoteEditingSettings = async () => {
-    setSavingSellerNoteEditing(true)
-    setMessage(null)
-
-    try {
-      const res = await apiRequest("/api/settings/seller-note", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          enableSellerNoteEditing,
-          sellerNoteText,
-        }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setMessage({ type: "success", text: "✓ Seller note editing setting saved successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save seller note editing setting")
-        setMessage({ type: "error", text: errorMsg })
-      }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save seller note editing setting" })
-    } finally {
-      setSavingSellerNoteEditing(false)
-    }
-  }
-
-  const handleSaveOfferSettings = async () => {
-    setSavingOfferSettings(true)
-    setMessage(null)
-
-    try {
-      const res = await apiRequest("/api/settings/offers", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          allowOffers,
-          minimumOfferAmount,
-        }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setMessage({ type: "success", text: "✓ Offer settings saved successfully" })
-      } else {
-        const errorMsg = data.details ? `${data.error}: ${data.details}` : (data.error || "Failed to save offer settings")
-        setMessage({ type: "error", text: errorMsg })
-      }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save offer settings" })
-    } finally {
-      setSavingOfferSettings(false)
-    }
-  }
+  const handleSaveOfferSettings = () =>
+    postSetting("/api/settings/offers", { allowOffers, minimumOfferAmount }, {
+      successText: "✓ Offer settings saved successfully",
+      failText: "Failed to save offer settings",
+      begin: () => setSavingOfferSettings(true),
+      end: () => setSavingOfferSettings(false),
+    })
 
   const handleSaveLocation = async () => {
     if (
@@ -771,38 +581,17 @@ export default function Settings() {
       return
     }
 
-    setSavingLocation(true)
-    setMessage(null)
-
-    try {
-      const res = await apiRequest("/api/settings/location", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          addressLine1,
-          addressLine2,
-          city,
-          stateOrProvince,
-          postalCode,
-          country,
-        }),
-      })
-
-      const data = await res.json()
-
-      if (res.ok) {
-        setMessage({ type: "success", text: "✓ Inventory location saved successfully" })
-      } else {
-        const errorMsg = data.detail || data.error || "Failed to save inventory location"
-        setMessage({ type: "error", text: errorMsg })
+    await postSetting(
+      "/api/settings/location",
+      { addressLine1, addressLine2, city, stateOrProvince, postalCode, country },
+      {
+        successText: "✓ Inventory location saved successfully",
+        failText: "Failed to save inventory location",
+        begin: () => setSavingLocation(true),
+        end: () => setSavingLocation(false),
+        extractError: detailError,
       }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save inventory location" })
-    } finally {
-      setSavingLocation(false)
-    }
+    )
   }
 
   const getMediaDefault = (mt: string): MediaDefault => mediaDefaults[mt] || emptyDefault
@@ -814,11 +603,8 @@ export default function Settings() {
     }))
   }
 
-  const handleSaveMediaDefault = async (mt: string) => {
+  const handleSaveMediaDefault = (mt: string) => {
     const d = getMediaDefault(mt)
-    setSavingMediaType(mt)
-    setMessage(null)
-
     const numOrNull = (v: string) => {
       const t = v.trim()
       if (!t) return null
@@ -826,33 +612,25 @@ export default function Settings() {
       return Number.isNaN(n) ? null : n
     }
 
-    try {
-      const res = await apiRequest("/api/settings/media-defaults", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          mediaType: mt,
-          height: numOrNull(d.height),
-          width: numOrNull(d.width),
-          depth: numOrNull(d.depth),
-          dimensionUnits: d.dimensionUnits,
-          weight: numOrNull(d.weight),
-          weightUnits: d.weightUnits,
-        }),
-      })
-      const data = await res.json()
-      if (res.ok) {
-        setMessage({ type: "success", text: `✓ ${mt} defaults saved` })
-      } else {
-        setMessage({ type: "error", text: data.detail || data.error || "Failed to save defaults" })
+    return postSetting(
+      "/api/settings/media-defaults",
+      {
+        mediaType: mt,
+        height: numOrNull(d.height),
+        width: numOrNull(d.width),
+        depth: numOrNull(d.depth),
+        dimensionUnits: d.dimensionUnits,
+        weight: numOrNull(d.weight),
+        weightUnits: d.weightUnits,
+      },
+      {
+        successText: `✓ ${mt} defaults saved`,
+        failText: "Failed to save defaults",
+        begin: () => setSavingMediaType(mt),
+        end: () => setSavingMediaType(null),
+        extractError: detailError,
       }
-    } catch (error) {
-      setMessage({ type: "error", text: "Failed to save defaults" })
-    } finally {
-      setSavingMediaType(null)
-    }
+    )
   }
 
   if (loading) {
