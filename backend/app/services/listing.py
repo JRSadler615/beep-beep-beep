@@ -16,18 +16,17 @@ import re
 import httpx
 
 from app.config import settings
-from app.db import supabase
+from app.constants import DEFAULT_SELLER_NOTE
+from app.db import fetch_one, supabase
 from app.services.ebay_client import (
     EbayTokenError,
     debug_log,
     ebay_headers,
+    first_error,
     get_valid_ebay_token,
+    read_error_body,
 )
-
-DEFAULT_SELLER_NOTE = (
-    "Please note: any mention of a digital copy or code may be expired and/or "
-    "unavailable. This does not affect the quality or functionality of the DVD."
-)
+from app.services.media import MEDIA_FORMAT_ASPECT, MEDIA_TITLE_ASPECT
 
 _CONDITION_MAP = {
     "Brand New": "NEW",
@@ -40,30 +39,6 @@ _CONDITION_MAP = {
     "Used - Good": "USED_GOOD",
     "Used - Acceptable": "USED_ACCEPTABLE",
     "For Parts or Not Working": "FOR_PARTS_OR_NOT_WORKING",
-}
-
-
-# Media type -> eBay's required "Format" item specific. Mirrors the frontend
-# MEDIA_FORMAT_ASPECT map; used as a server-side safety net so Format is set
-# even if a listing is submitted without it.
-_MEDIA_FORMAT_ASPECT = {
-    "DVD": "DVD",
-    "Blu-ray": "Blu-ray",
-    "4k DVD": "4K UHD",
-    "CD": "CD",
-    "Cassette": "Cassette",
-    "VHS": "VHS",
-}
-
-# Media type -> the category's required "title" item specific. Its value is the
-# listing title. Video formats use "Movie/TV Title"; music uses "Release Title".
-_MEDIA_TITLE_ASPECT = {
-    "DVD": "Movie/TV Title",
-    "Blu-ray": "Movie/TV Title",
-    "4k DVD": "Movie/TV Title",
-    "VHS": "Movie/TV Title",
-    "CD": "Release Title",
-    "Cassette": "Release Title",
 }
 
 
@@ -227,20 +202,6 @@ def extract_aspect_value(aspect_name: str, text: str) -> str | None:
     return None
 
 
-def _err(resp: httpx.Response) -> tuple[dict, str]:
-    """Read an eBay error body once: parsed JSON + raw text."""
-    text = resp.text
-    try:
-        return (json.loads(text) if text else {}), text
-    except (ValueError, TypeError):
-        return {}, text
-
-
-def _first_error(error_data: dict) -> dict:
-    errs = error_data.get("errors") or []
-    return errs[0] if errs else {}
-
-
 # --- Best Offer helpers (port of the same-named TS helpers) -----------------
 
 
@@ -323,12 +284,6 @@ async def _recreate_offer_with_best_offer(client, base, token, existing_offer_id
     }
 
 
-def _fetch_one(table: str, user_id: str) -> dict | None:
-    res = supabase.table(table).select("*").eq("user_id", user_id).limit(1).execute()
-    rows = res.data or []
-    return rows[0] if rows else None
-
-
 async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
     title = body.get("title")
     description = body.get("description")
@@ -368,10 +323,10 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
         description = description.strip()
 
     # Seller note (+ user settings, loaded together)
-    seller_note_settings = _fetch_one("seller_note_settings", user_id)
-    offer_settings = _fetch_one("offer_settings", user_id)
-    saved_policies = _fetch_one("ebay_business_policies", user_id)
-    saved_location = _fetch_one("ebay_inventory_location", user_id)
+    seller_note_settings = fetch_one("seller_note_settings", user_id)
+    offer_settings = fetch_one("offer_settings", user_id)
+    saved_policies = fetch_one("ebay_business_policies", user_id)
+    saved_location = fetch_one("ebay_inventory_location", user_id)
 
     seller_note = DEFAULT_SELLER_NOTE
     if seller_note_settings and seller_note_settings.get("enable_seller_note_editing"):
@@ -499,8 +454,8 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
     #   - title aspect    <- listing title (e.g. "Movie/TV Title")
     mt = (media_type or "").strip()
     auto_aspects: list[tuple[str, str | None]] = [
-        ("Format", _MEDIA_FORMAT_ASPECT.get(mt)),
-        (_MEDIA_TITLE_ASPECT.get(mt) or "", (title or "").strip()[:65] if title else None),
+        ("Format", MEDIA_FORMAT_ASPECT.get(mt)),
+        (MEDIA_TITLE_ASPECT.get(mt) or "", (title or "").strip()[:65] if title else None),
     ]
     # Artist applies to music formats only (CD/Cassette).
     if mt in ("CD", "Cassette") and artist and artist.strip():
@@ -648,8 +603,8 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
             content=json.dumps(inventory_payload),
         )
         if inv.status_code != 204 and inv.status_code >= 400:
-            error_data, _ = _err(inv)
-            fe = _first_error(error_data)
+            error_data, _ = read_error_body(inv)
+            fe = first_error(error_data)
             msg = fe.get("message") or fe.get("longMessage") or error_data.get("message") or "Failed to create inventory item"
             code = fe.get("errorId") or fe.get("code")
             needs_reconnect = code == 2004
@@ -725,7 +680,7 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
             if create_loc.status_code == 204 or create_loc.status_code == 409:
                 merchant_location_key = desired_key
             else:
-                error_data, _ = _err(create_loc)
+                error_data, _ = read_error_body(create_loc)
                 print("Failed to auto-create inventory location:", create_loc.status_code, error_data)
                 return 400, {
                     "error": "Could not create your eBay inventory location automatically. Please verify your saved address.",
@@ -816,8 +771,8 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
         )
 
         if offer_resp.status_code >= 400:
-            error_data, _ = _err(offer_resp)
-            fe = _first_error(error_data)
+            error_data, _ = read_error_body(offer_resp)
+            fe = first_error(error_data)
             if offer_resp.status_code == 401 and (fe.get("errorId") or fe.get("code")) == 2004:
                 return 401, {
                     "error": "Your eBay token is missing the required 'sell.inventory' scope for "
@@ -846,7 +801,7 @@ async def create_listing(user_id: str, body: dict) -> tuple[int, dict]:
                             short_description, description, title, updated=True,
                         )
                         return result
-                    upd_err, _ = _err(upd)
+                    upd_err, _ = read_error_body(upd)
                     return 409, {
                         "error": "An offer already exists for this SKU and could not be updated. "
                         "Please try a different product or wait a moment.",
@@ -900,8 +855,8 @@ async def _publish_and_finish(
     )
 
     if pub.status_code >= 400:
-        error_data, _ = _err(pub)
-        fe = _first_error(error_data)
+        error_data, _ = read_error_body(pub)
+        fe = first_error(error_data)
         if pub.status_code == 401 and (fe.get("errorId") or fe.get("code")) == 2004:
             return 401, {
                 "error": "Your eBay token is missing the required 'sell.inventory' scope for "

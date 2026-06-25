@@ -15,19 +15,9 @@ UPCs are stored without leading zeros (e.g. '31398218487'), so lookups try a
 few normalized forms.
 """
 
-import re
-
 from app.db import supabase
-
-# Media type -> catalog table. Types not listed (e.g. "Other") have no catalog.
-CATALOG_TABLES = {
-    "DVD": "dvd_upc_catalog",
-    "Blu-ray": "dvd_upc_catalog",
-    "4k DVD": "dvd_upc_catalog",
-    "CD": "cd_upc_catalog",
-    "VHS": "vhs_upc_catalog",
-    "Cassette": "cassette_upc_catalog",
-}
+from app.services.media import CATALOG_TABLES
+from app.services.upc import candidates, normalize_no_zeros
 
 
 def catalog_table_for(media_type: str | None) -> str | None:
@@ -76,23 +66,13 @@ def _coerce_dim(key: str, value) -> object | None:
     return text or None
 
 
-def _candidates(upc: str) -> list[str]:
-    """UPC forms to try: raw, digits-only, no-leading-zeros, zero-padded."""
-    digits = re.sub(r"\D", "", upc or "")
-    cands = {upc, digits, digits.lstrip("0")}
-    if digits:
-        cands.add(digits.zfill(12))
-        cands.add(digits.zfill(13))
-    return [c for c in cands if c]
-
-
 def lookup_catalog_by_upc(upc: str, media_type: str | None = "DVD") -> dict | None:
     """Return a normalized catalog dict for a UPC from the media type's catalog,
     or None if there's no catalog for the type or no matching row."""
     table = catalog_table_for(media_type)
     if not table:
         return None
-    cands = _candidates(upc)
+    cands = candidates(upc)
     if not cands:
         return None
     or_expr = ",".join(f"UPC.eq.{c}" for c in cands)
@@ -124,8 +104,7 @@ def upsert_catalog(
     table = catalog_table_for(media_type)
     if not table:
         return None
-    digits = re.sub(r"\D", "", upc or "")
-    stored_upc = digits.lstrip("0") or digits  # match the table's no-leading-zero style
+    stored_upc = normalize_no_zeros(upc)  # match the table's no-leading-zero style
     row: dict = {"UPC": stored_upc, "Title": title}
     for key, col in FIELD_COLUMNS.items():
         if key in fields and fields[key] is not None:

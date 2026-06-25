@@ -18,22 +18,11 @@ import httpx
 from app.config import settings
 from app.services.ebay_client import (
     EbayTokenError,
-    debug_log,
     ebay_headers,
     get_valid_ebay_token,
+    read_error_body,
 )
-
-
-def _digits(s: object) -> str:
-    return re.sub(r"\D", "", str(s or ""))
-
-
-def _err(resp: httpx.Response) -> tuple[dict, str]:
-    text = resp.text
-    try:
-        return (json.loads(text) if text else {}), text
-    except (ValueError, TypeError):
-        return {}, text
+from app.services.upc import digits_only
 
 
 async def update_via_trading_api(
@@ -128,7 +117,7 @@ async def increase_inventory(user_id: str, sku: str | None, upc: str | None) -> 
                                 None,
                             )
                         )
-                        if iu and _digits(iu) == _digits(upc):
+                        if iu and digits_only(iu) == digits_only(upc):
                             matching.append(item.get("sku"))
                 for item_sku in matching:
                     r = await client.get(
@@ -176,7 +165,7 @@ async def increase_inventory(user_id: str, sku: str | None, upc: str | None) -> 
         get_offer_url = f"{base}/sell/inventory/v1/offer/{offer_id}"
         go = await client.get(get_offer_url, headers=ebay_headers(access_token))
         if go.status_code >= 400:
-            error_data, _ = _err(go)
+            error_data, _ = read_error_body(go)
             return go.status_code, {
                 "error": f"Failed to get offer details: {go.status_code}",
                 "details": error_data,
@@ -234,7 +223,7 @@ async def increase_inventory(user_id: str, sku: str | None, upc: str | None) -> 
             get_offer_url, headers=ebay_headers(access_token), content=json.dumps(update_payload)
         )
         if upd.status_code >= 400:
-            error_data, error_text = _err(upd)
+            error_data, error_text = read_error_body(upd)
             print("[INVENTORY] Failed to update offer:", upd.status_code, error_data, error_text)
             return upd.status_code, {
                 "error": f"Failed to update inventory: {upd.status_code}",
@@ -273,7 +262,7 @@ async def increase_inventory(user_id: str, sku: str | None, upc: str | None) -> 
                                     "method": "inventory_item_update",
                                 }
                     else:
-                        ed, et = _err(ui)
+                        ed, et = read_error_body(ui)
                         print("[INVENTORY] Failed to update inventory item:", ui.status_code, ed, et)
             except Exception as e:  # noqa: BLE001
                 print("[INVENTORY] Error updating inventory item:", e)
@@ -310,7 +299,7 @@ async def increase_inventory(user_id: str, sku: str | None, upc: str | None) -> 
                 bulk = await client.post(bulk_url, headers=ebay_headers(access_token), content=json.dumps(payload_sku))
 
             if bulk.status_code >= 400:
-                error_data, error_text = _err(bulk)
+                error_data, error_text = read_error_body(bulk)
                 print("[INVENTORY] Bulk update failed:", bulk.status_code, error_data, error_text)
                 not_supported = (
                     "not currently supported" in error_text
@@ -395,7 +384,7 @@ async def increase_inventory(user_id: str, sku: str | None, upc: str | None) -> 
             f"{base}/sell/inventory/v1/offer/{offer_id}/publish", headers=ebay_headers(access_token)
         )
         if pub.status_code >= 400:
-            error_data, _ = _err(pub)
+            error_data, _ = read_error_body(pub)
             return 200, {
                 "success": True,
                 "newQuantity": new_quantity,

@@ -13,25 +13,8 @@ import httpx
 
 from app.config import settings
 from app.services.catalog import catalog_table_for, lookup_catalog_by_upc
-from app.services.ebay_client import EbayTokenError, debug_log, get_valid_ebay_token
-
-# Media type -> eBay leaf category id (mirrors the frontend map). Used to
-# scope the Browse search so results don't blend formats (e.g. CD vs DVD).
-# DVD / Blu-ray / 4k DVD all live under "DVDs & Blu-ray Discs" (617).
-MEDIA_CATEGORY_IDS = {
-    "DVD": "617",
-    "Blu-ray": "617",
-    "4k DVD": "617",
-    "CD": "176984",
-    "Cassette": "176983",
-    "VHS": "309",
-}
-
-# Allowed media categories (leaves + the Movies & TV / Music parents).
-# NOTE: eBay Browse allows only ONE category_id per search (error 12030), so we
-# scope each search to the single category matching the selected media type.
-# "Other" has no single category and is left unrestricted.
-ALLOWED_CATEGORY_IDS = ["617", "176984", "176983", "309", "11232", "11233"]
+from app.services.ebay_client import EbayTokenError, get_valid_ebay_token
+from app.services.media import MEDIA_CATEGORY_IDS
 
 
 def _image_size_from_url(url: str | None) -> int:

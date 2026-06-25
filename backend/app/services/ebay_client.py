@@ -6,6 +6,7 @@ The eBay token is stored per user in the Supabase `ebay_tokens` table.
 """
 
 import base64
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -32,6 +33,22 @@ def ebay_headers(access_token: str) -> dict[str, str]:
         "Accept-Language": "en-US",
         "X-EBAY-C-MARKETPLACE-ID": settings.EBAY_MARKETPLACE_ID,
     }
+
+
+def read_error_body(resp: httpx.Response) -> tuple[dict, str]:
+    """Read an eBay error response once: parsed JSON body + raw text. eBay error
+    bodies are sometimes empty or non-JSON, so this never raises."""
+    text = resp.text
+    try:
+        return (json.loads(text) if text else {}), text
+    except (ValueError, TypeError):
+        return {}, text
+
+
+def first_error(error_data: dict) -> dict:
+    """The first entry of an eBay `errors` array, or {} if there is none."""
+    errs = error_data.get("errors") or []
+    return errs[0] if errs else {}
 
 
 class EbayTokenError(Exception):

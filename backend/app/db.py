@@ -26,3 +26,15 @@ def get_db() -> Client:
 
 # Convenience singleton for imports: `from app.db import supabase`
 supabase: Client = get_db()
+
+
+def fetch_one(table: str, user_id: str) -> dict | None:
+    """Return the user's single row for a per-user table, or None.
+
+    Most settings tables hold one row per user; this is the shared read used by
+    both the settings router and the listing service. The service role bypasses
+    RLS, so the `user_id` scope here is the security boundary — never drop it.
+    """
+    res = supabase.table(table).select("*").eq("user_id", user_id).limit(1).execute()
+    rows = res.data or []
+    return rows[0] if rows else None

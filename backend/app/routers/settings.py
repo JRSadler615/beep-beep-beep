@@ -18,27 +18,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.auth import get_user_id
-from app.db import supabase
+from app.constants import DEFAULT_SELLER_NOTE
+from app.db import fetch_one, supabase
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
-
-DEFAULT_SELLER_NOTE = (
-    "Please note: any mention of a digital copy or code may be expired and/or "
-    "unavailable. This does not affect the quality or functionality of the DVD."
-)
-
-
-def _fetch_one(table: str, user_id: str) -> Optional[dict]:
-    """Return the user's single row for a settings table, or None."""
-    res = (
-        supabase.table(table)
-        .select("*")
-        .eq("user_id", user_id)
-        .limit(1)
-        .execute()
-    )
-    rows = res.data or []
-    return rows[0] if rows else None
 
 
 def _upsert(table: str, user_id: str, values: dict) -> dict:
@@ -63,7 +46,7 @@ class SkuPrefixUpdate(BaseModel):
 
 @router.get("/sku")
 def get_sku(user_id: str = Depends(get_user_id)):
-    row = _fetch_one("sku_settings", user_id)
+    row = fetch_one("sku_settings", user_id)
     if not row:
         return {"nextSkuCounter": 1, "skuPrefix": None}
     return {"nextSkuCounter": row["next_sku_counter"], "skuPrefix": row["sku_prefix"]}
@@ -172,7 +155,7 @@ class DiscountUpdate(BaseModel):
 
 @router.get("/discount")
 def get_discount(user_id: str = Depends(get_user_id)):
-    row = _fetch_one("discount_settings", user_id)
+    row = fetch_one("discount_settings", user_id)
     if not row:
         return {"discountAmount": 3.0, "minimumPrice": 4.0}
     return {"discountAmount": row["discount_amount"], "minimumPrice": row["minimum_price"]}
@@ -190,7 +173,7 @@ def set_discount(body: DiscountUpdate, user_id: str = Depends(get_user_id)):
             raise HTTPException(status_code=400, detail="Minimum price cannot be negative")
         values["minimum_price"] = body.minimumPrice
 
-    existing = _fetch_one("discount_settings", user_id) or {}
+    existing = fetch_one("discount_settings", user_id) or {}
     row = _upsert(
         "discount_settings",
         user_id,
@@ -217,7 +200,7 @@ class EditModeUpdate(BaseModel):
 
 @router.get("/edit-mode")
 def get_edit_mode(user_id: str = Depends(get_user_id)):
-    row = _fetch_one("edit_mode_settings", user_id)
+    row = fetch_one("edit_mode_settings", user_id)
     return {"defaultEditMode": row["default_edit_mode"] if row else False}
 
 
@@ -240,7 +223,7 @@ class OverrideDescriptionUpdate(BaseModel):
 
 @router.get("/override-description")
 def get_override_description(user_id: str = Depends(get_user_id)):
-    row = _fetch_one("override_description_settings", user_id)
+    row = fetch_one("override_description_settings", user_id)
     if not row:
         return {"useOverrideDescription": False, "overrideDescription": ""}
     return {
@@ -253,7 +236,7 @@ def get_override_description(user_id: str = Depends(get_user_id)):
 def set_override_description(
     body: OverrideDescriptionUpdate, user_id: str = Depends(get_user_id)
 ):
-    existing = _fetch_one("override_description_settings", user_id) or {}
+    existing = fetch_one("override_description_settings", user_id) or {}
     use_override = (
         body.useOverrideDescription
         if body.useOverrideDescription is not None
@@ -288,7 +271,7 @@ class SellerNoteUpdate(BaseModel):
 
 @router.get("/seller-note")
 def get_seller_note(user_id: str = Depends(get_user_id)):
-    row = _fetch_one("seller_note_settings", user_id)
+    row = fetch_one("seller_note_settings", user_id)
     if not row:
         return {"enableSellerNoteEditing": False, "sellerNoteText": DEFAULT_SELLER_NOTE}
     return {
@@ -299,7 +282,7 @@ def get_seller_note(user_id: str = Depends(get_user_id)):
 
 @router.post("/seller-note")
 def set_seller_note(body: SellerNoteUpdate, user_id: str = Depends(get_user_id)):
-    existing = _fetch_one("seller_note_settings", user_id) or {}
+    existing = fetch_one("seller_note_settings", user_id) or {}
     enabled = (
         body.enableSellerNoteEditing
         if body.enableSellerNoteEditing is not None
@@ -333,7 +316,7 @@ class OfferUpdate(BaseModel):
 
 @router.get("/offers")
 def get_offers(user_id: str = Depends(get_user_id)):
-    row = _fetch_one("offer_settings", user_id)
+    row = fetch_one("offer_settings", user_id)
     if not row:
         return {"allowOffers": False, "minimumOfferAmount": 10.0}
     return {
@@ -349,7 +332,7 @@ def set_offers(body: OfferUpdate, user_id: str = Depends(get_user_id)):
             status_code=400,
             detail="minimumOfferAmount must be a valid number greater than 0",
         )
-    existing = _fetch_one("offer_settings", user_id) or {}
+    existing = fetch_one("offer_settings", user_id) or {}
     allow = body.allowOffers if body.allowOffers is not None else existing.get("allow_offers", False)
     minimum = (
         body.minimumOfferAmount
@@ -429,7 +412,7 @@ def _location_response(row: Optional[dict]) -> dict:
 
 @router.get("/location")
 def get_location(user_id: str = Depends(get_user_id)):
-    return _location_response(_fetch_one("ebay_inventory_location", user_id))
+    return _location_response(fetch_one("ebay_inventory_location", user_id))
 
 
 @router.post("/location")
@@ -533,7 +516,7 @@ def set_media_defaults(body: MediaDefaultUpdate, user_id: str = Depends(get_user
 
 @router.get("/ebay-policies")
 def get_ebay_policies(user_id: str = Depends(get_user_id)):
-    return _policies_response(_fetch_one("ebay_business_policies", user_id))
+    return _policies_response(fetch_one("ebay_business_policies", user_id))
 
 
 @router.post("/ebay-policies")

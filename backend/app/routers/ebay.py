@@ -1,15 +1,15 @@
 """eBay endpoints.
 
-`/api/ebay/check-connection` is fully implemented as the reference pattern.
-The data endpoints are stubbed; implement each from the matching Next.js
-handler under `app/api/ebay/**`, using `get_valid_ebay_token` +
-`ebay_headers` from `services/ebay_client.py`.
+OAuth connect/callback/disconnect, plus the data endpoints (search,
+check-duplicate, policies, validate-listing, list, increase-inventory). Each
+data endpoint uses `get_valid_ebay_token` + `ebay_headers` from
+`services/ebay_client.py`; the heavier flows (search, list, increase-inventory)
+delegate to the matching `services/*` module.
 """
 
 import asyncio
 import base64
 import json
-import re
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -28,7 +28,9 @@ from app.services.ebay_client import (
 )
 from app.services.inventory import increase_inventory as _increase_inventory
 from app.services.listing import create_listing as _create_listing
+from app.services.media import media_config
 from app.services.search import search_product as _search_product
+from app.services.upc import digits_only, normalize_no_zeros
 
 router = APIRouter(prefix="/api/ebay", tags=["ebay"])
 
@@ -55,6 +57,14 @@ def check_connection(user_id: str = Depends(get_user_id)):
 def disconnect(user_id: str = Depends(get_user_id)):
     supabase.table("ebay_tokens").delete().eq("user_id", user_id).execute()
     return {"success": True}
+
+
+@router.get("/media-config")
+def get_media_config(user_id: str = Depends(get_user_id)):
+    """Canonical media-type maps (category ids, Format / title item specifics,
+    catalog-backed types) for the SPA. Backed by `services/media.py` so the
+    backend is the single source of truth; the frontend mirrors this."""
+    return media_config()
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +199,8 @@ async def callback(
 
 
 # ---------------------------------------------------------------------------
-# Data endpoints — stubs. Implement from the matching Next.js handlers.
-# Example of the intended pattern is shown in `search` below.
+# Data endpoints. Thin handlers that authenticate, then either call eBay
+# directly or delegate to a `services/*` module (search, list, increase).
 # ---------------------------------------------------------------------------
 
 
@@ -210,17 +220,6 @@ async def search(
     return JSONResponse(status_code=status_code, content=payload)
 
 
-def _normalize_upc(value: object) -> str:
-    return re.sub(r"\D", "", str(value or ""))
-
-
-def _normalize_upc_no_zeros(value: object) -> str:
-    n = _normalize_upc(value)
-    if not n:
-        return ""
-    return n.lstrip("0") or n
-
-
 @router.get("/check-duplicate")
 async def check_duplicate(upc: str = Query(...), user_id: str = Depends(get_user_id)):
     """Scan the seller's inventory items for a matching UPC/EAN/ISBN/GTIN.
@@ -232,9 +231,8 @@ async def check_duplicate(upc: str = Query(...), user_id: str = Depends(get_user
         return {"hasDuplicates": False, "duplicates": [], "upc": upc, "error": e.message}
 
     original = upc.strip()
-    search = _normalize_upc(original)
-    search_no_zeros = _normalize_upc_no_zeros(original)
-    original_digits = re.sub(r"\D", "", original)
+    search = digits_only(original)
+    search_no_zeros = normalize_no_zeros(original)
 
     def value_matches(value: object) -> bool:
         if not value:
@@ -244,9 +242,8 @@ async def check_duplicate(upc: str = Query(...), user_id: str = Depends(get_user
         s = str(value).strip()
         return (
             s == original
-            or _normalize_upc(s) == search
-            or _normalize_upc_no_zeros(s) == search_no_zeros
-            or re.sub(r"\D", "", s) == original_digits
+            or digits_only(s) == search
+            or normalize_no_zeros(s) == search_no_zeros
         )
 
     def check_item(item: dict) -> dict | None:
