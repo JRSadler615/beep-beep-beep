@@ -69,9 +69,8 @@ export default function ProductSearch() {
   const [MediaRated, setMediaRated] = useState("")
   const [MediaLength, setMediaLength] = useState("")
   // Artist — shown only for CD/Cassette; maps to eBay's "Artist" item specific.
-  // TODO: CDs/Cassettes have no in-house catalog yet. Wire this field to a music
-  // catalog lookup here when one exists; until then it auto-fills from eBay
-  // search data when available, otherwise stays blank for manual entry.
+  // Populated from the CD/Cassette catalog on a UPC hit and saved back on
+  // listing; falls back to eBay search data, otherwise blank for manual entry.
   const [MediaArtist, setMediaArtist] = useState("")
   // Genre validation: when eBay rejects the genre value, prompt "did you mean".
   // skipGenre drops the genre from the aspect mapping for the retry.
@@ -2462,8 +2461,8 @@ export default function ProductSearch() {
                           <option value="Other">Other</option>
                         </select>
                         {/* Artist: only for CD/Cassette. Maps to eBay's "Artist"
-                            item specific. TODO: connect to a music catalog when
-                            available; for now auto-fills from search or blank. */}
+                            item specific; populated from the CD/Cassette catalog
+                            and saved back on listing. */}
                         {(MediaType === "CD" || MediaType === "Cassette") && (
                           <input
                             type="text"
