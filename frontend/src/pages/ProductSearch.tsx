@@ -27,6 +27,9 @@ interface ProductData {
 
 type SearchType = "upc" | "title" | "any"
 
+// Flip to true to trace the barcode scanner to the console while debugging it.
+const SCANNER_DEBUG = false
+
 /**
  * ProductSearch — the core listing workflow page.
  *
@@ -56,7 +59,6 @@ export default function ProductSearch() {
   const [productData, setProductData] = useState<ProductData | null>(null)
   const [scannerActive, setScannerActive] = useState(false)
   const [scanningStatus, setScanningStatus] = useState("")
-  const [debugLogs, setDebugLogs] = useState<string[]>([])
   const scannerRef = useRef<Html5QrcodeScanner | null>(null)
   const scannerElementId = "html5-qrcode-scanner"
   const errorCooldownRef = useRef<NodeJS.Timeout | null>(null)
@@ -126,7 +128,6 @@ export default function ProductSearch() {
   
   // Banned keywords state
   const [bannedKeywords, setBannedKeywords] = useState<string[]>([])
-  const [keywordsLoaded, setKeywordsLoaded] = useState(false)
   
   // Mean price tracking state
   const [isMeanPrice, setIsMeanPrice] = useState(false)
@@ -223,11 +224,10 @@ export default function ProductSearch() {
     }
   }
   
-  // Helper function to add debug log
+  // Barcode-scanner trace. The on-screen panel was removed, so these are gated
+  // behind SCANNER_DEBUG and go to the console only when debugging the scanner.
   const addDebugLog = (message: string) => {
-    const timestamp = new Date().toLocaleTimeString()
-    const logMessage = `[${timestamp}] ${message}`
-    setDebugLogs((prev) => [...prev.slice(-9), logMessage]) // Keep last 10 logs
+    if (SCANNER_DEBUG) console.log(`[scanner ${new Date().toLocaleTimeString()}] ${message}`)
   }
 
   useEffect(() => {
@@ -248,11 +248,8 @@ export default function ProductSearch() {
 
     // Fetch banned keywords
     const loadBannedKeywords = async () => {
-      console.log("[ProductSearch] Loading banned keywords...")
       const keywords = await fetchBannedKeywords()
-      console.log("[ProductSearch] Banned keywords loaded:", keywords)
       setBannedKeywords(keywords)
-      setKeywordsLoaded(true)
     }
     loadBannedKeywords()
 
@@ -316,10 +313,6 @@ export default function ProductSearch() {
           const data = await res.json()
           setUseOverrideDescription(data.useOverrideDescription || false)
           setUniversalOverrideDescription(data.overrideDescription || "")
-          console.log("[OVERRIDE DEBUG] Loaded settings:", {
-            useOverrideDescription: data.useOverrideDescription,
-            overrideDescription: data.overrideDescription
-          })
         }
       } catch (error) {
         console.error("Failed to fetch override description settings:", error)
@@ -421,9 +414,6 @@ export default function ProductSearch() {
       // Initialize editable fields with product data
       // Apply keyword removal to title
       const processedTitle = removeKeywords(data.title || "", bannedKeywords)
-      console.log("[handleSearch] Original title:", data.title)
-      console.log("[handleSearch] Banned keywords:", bannedKeywords)
-      console.log("[handleSearch] Processed title:", processedTitle)
       setEditedTitle(processedTitle)
       // If override description is enabled, start with empty description so user can type their own
       // Otherwise, populate from product data
@@ -478,17 +468,6 @@ export default function ProductSearch() {
   const handleSaveEdit = () => {
     if (!productData) return
     
-    console.log("[FRONTEND DEBUG] ========== SAVE EDIT CLICKED ==========")
-    console.log("[FRONTEND DEBUG] Save Edit - Description:", JSON.stringify({
-      useOverrideDescription: useOverrideDescription,
-      editedDescription: editedDescription,
-      editedDescriptionLength: editedDescription ? editedDescription.length : 0,
-      editedDescriptionPreview: editedDescription ? editedDescription.substring(0, 100) : "empty",
-      previousProductDataDescription: productData.description,
-      previousProductDataShortDescription: productData.shortDescription,
-      willSave: editedDescription
-    }, null, 2))
-    
     // Update product data with edited values
     setProductData({
       ...productData,
@@ -502,15 +481,13 @@ export default function ProductSearch() {
         currency: productData.price?.currency || "USD"
       }
     })
-    
-    console.log("[FRONTEND DEBUG] Product data updated with description:", editedDescription)
+
     setIsEditing(false)
     setListingSuccess(null)
     setListingError(null)
   }
-  
+
   const handleCancelEdit = () => {
-    console.log("[FRONTEND DEBUG] ========== CANCEL EDIT CLICKED ==========")
     // Reset to original values, but always default condition to "Used - Very Good"
     if (productData) {
       setEditedTitle(removeKeywords(productData.title || "", bannedKeywords))
@@ -521,23 +498,38 @@ export default function ProductSearch() {
       if (useOverrideDescription) {
         // Check if there's a previously saved description in productData
         const savedDescription = productData.description || productData.shortDescription || ""
-        console.log("[FRONTEND DEBUG] Cancel - Override enabled, resetting to saved description:", {
-          savedDescription: savedDescription,
-          savedDescriptionLength: savedDescription.length
-        })
         setEditedDescription(savedDescription)
       } else {
         const normalDescription = productData.shortDescription || productData.description || ""
-        console.log("[FRONTEND DEBUG] Cancel - Override disabled, resetting to normal description:", normalDescription)
         setEditedDescription(normalDescription)
       }
       setEditedCondition("Used - Very Good")
       setEditedPrice(productData.price?.value || "0.00")
     }
     setIsEditing(false)
-    console.log("[FRONTEND DEBUG] Edit mode cancelled")
   }
   
+  // Reset every structured Media field (details + dimensions/weight) to its
+  // default. The ~13 Media* fields are one logical group, so resetting/populating
+  // them goes through here rather than being spelled out at each call site.
+  const resetMediaFields = () => {
+    setMediaType("")
+    setMediaYear("")
+    setMediaPublisher("")
+    setMediaGenre("")
+    setMediaRated("")
+    setMediaLength("")
+    setMediaArtist("")
+    setSkipGenre(false)
+    setGenreSuggestion(null)
+    setMediaHeight("")
+    setMediaWidth("")
+    setMediaDepth("")
+    setMediaDimUnit("inch")
+    setMediaWeight("")
+    setMediaWeightUnit("ounce")
+  }
+
   const handleClearProduct = () => {
     // Clear all product-related state
     setProductData(null)
@@ -565,21 +557,7 @@ export default function ProductSearch() {
     setInventoryMessage(null) // Clear inventory increase message
 
     // Clear Media detail fields too
-    setMediaType("")
-    setMediaYear("")
-    setMediaPublisher("")
-    setMediaGenre("")
-    setMediaRated("")
-    setMediaLength("")
-    setMediaArtist("")
-    setSkipGenre(false)
-    setGenreSuggestion(null)
-    setMediaHeight("")
-    setMediaWidth("")
-    setMediaDepth("")
-    setMediaDimUnit("inch")
-    setMediaWeight("")
-    setMediaWeightUnit("ounce")
+    resetMediaFields()
     setNoMatchWarning(false)
 
     // After clearing, refocus UPC input so the next barcode scan goes straight into it
@@ -842,6 +820,200 @@ export default function ProductSearch() {
     }
   }
   
+  // Merge the product's existing aspects with any user-provided ones, then
+  // auto-map the Format / title / Artist / Genre item specifics. `genreOverride`
+  // lets a retry use a resolved genre without waiting on React state.
+  const buildMergedAspects = (
+    additionalAspects?: Record<string, string>,
+    genreOverride?: { skip?: boolean; value?: string },
+  ): Record<string, string[]> => {
+    const currentAspects = productData?.localizedAspects || productData?.aspects || {}
+    const mergedAspects: Record<string, string[]> = {}
+
+    // Copy existing aspects, normalizing each to a non-empty string array.
+    Object.keys(currentAspects).forEach((key) => {
+      const value = currentAspects[key]
+      if (value) {
+        if (Array.isArray(value)) {
+          const nonEmptyValues = value.filter((v) => v && String(v).trim() !== "")
+          if (nonEmptyValues.length > 0) {
+            mergedAspects[key] = nonEmptyValues.map((v) => String(v).trim())
+          }
+        } else if (String(value).trim() !== "") {
+          mergedAspects[key] = [String(value).trim()]
+        }
+      }
+    })
+
+    // Overlay user-provided aspects, matching each to eBay's exact aspect name
+    // (exact -> partial -> against the missingAspects list).
+    if (additionalAspects && Object.keys(additionalAspects).length > 0) {
+      Object.keys(additionalAspects).forEach((userKey) => {
+        const value = additionalAspects[userKey]
+        if (value && typeof value === "string" && value.trim() !== "") {
+          let aspectDef = aspectDefinitions.find(
+            (a: any) => a.name && a.name.toLowerCase() === userKey.toLowerCase(),
+          )
+          if (!aspectDef && aspectDefinitions.length > 0) {
+            aspectDef = aspectDefinitions.find(
+              (a: any) =>
+                a.name &&
+                (a.name.toLowerCase().includes(userKey.toLowerCase()) ||
+                  userKey.toLowerCase().includes(a.name.toLowerCase())),
+            )
+          }
+          if (!aspectDef && missingAspects.length > 0) {
+            const matchingMissingAspect = missingAspects.find(
+              (a: string) =>
+                a.toLowerCase() === userKey.toLowerCase() ||
+                a.toLowerCase().includes(userKey.toLowerCase()) ||
+                userKey.toLowerCase().includes(a.toLowerCase()),
+            )
+            if (matchingMissingAspect) {
+              mergedAspects[matchingMissingAspect] = [value.trim()]
+              return
+            }
+          }
+          mergedAspects[aspectDef ? aspectDef.name : userKey] = [value.trim()]
+        }
+      })
+    }
+
+    // Add an aspect only if it isn't already set (case-insensitive).
+    const setIfAbsent = (name: string, value: string) => {
+      const has = Object.keys(mergedAspects).some(
+        (k) => k.toLowerCase() === name.toLowerCase() && (mergedAspects[k] || []).length > 0,
+      )
+      if (!has) mergedAspects[name] = [value]
+    }
+
+    const formatValue = MEDIA_FORMAT_ASPECT[MediaType]
+    if (formatValue) setIfAbsent("Format", formatValue)
+
+    // Title aspect (e.g. "Movie/TV Title"); eBay caps specifics at 65 chars.
+    const titleAspectName = MEDIA_TITLE_ASPECT[MediaType]
+    const titleAspectValue = (editedTitle || productData?.title || "").trim().slice(0, 65)
+    if (titleAspectName && titleAspectValue) setIfAbsent(titleAspectName, titleAspectValue)
+
+    const artistValue = (MediaArtist || "").trim().slice(0, 65)
+    if ((MediaType === "CD" || MediaType === "Cassette") && artistValue) {
+      setIfAbsent("Artist", artistValue)
+    }
+
+    // Genre, unless the user chose SKIP after a "did you mean" prompt.
+    let effectiveGenre = (MediaGenre || "").trim()
+    let effectiveSkipGenre = skipGenre
+    if (genreOverride?.skip) {
+      effectiveSkipGenre = true
+    } else if (genreOverride?.value !== undefined) {
+      effectiveGenre = genreOverride.value.trim()
+      effectiveSkipGenre = false
+    }
+    const genreValue = effectiveGenre.slice(0, 65)
+    if (genreValue && !effectiveSkipGenre) setIfAbsent("Genre", genreValue)
+
+    return mergedAspects
+  }
+
+  // The description sent to eBay: the universal override when enabled and set,
+  // otherwise the structured Media fields + edited description, falling back to
+  // the eBay description.
+  const buildListingDescription = (): string => {
+    if (
+      useOverrideDescription &&
+      universalOverrideDescription &&
+      universalOverrideDescription.trim().length > 0
+    ) {
+      return universalOverrideDescription
+    }
+    return (
+      buildCombinedDescription() ||
+      productData?.shortDescription ||
+      productData?.description ||
+      ""
+    )
+  }
+
+  // Handle a non-OK /list response. Returns true if it surfaced an inline
+  // prompt (missing item specifics or genre suggestion) so the caller should
+  // stop; otherwise throws an Error carrying a readable eBay message.
+  const handleListingErrorResponse = (data: any): boolean => {
+    if (data.action === "missing_item_specifics" && data.missingItemSpecifics) {
+      setMissingAspects(data.missingItemSpecifics)
+      // Keep existing definitions if the response doesn't include new ones.
+      if (data.aspectDefinitions && data.aspectDefinitions.length > 0) {
+        setAspectDefinitions(data.aspectDefinitions)
+      } else if (aspectDefinitions.length === 0) {
+        setAspectDefinitions([])
+      }
+
+      // Pre-fill: keep the user's prior input (mapped to the exact eBay name),
+      // then fill suggested values for anything still blank.
+      const prefillAspects: Record<string, string> = {}
+      if (userProvidedAspects && Object.keys(userProvidedAspects).length > 0) {
+        Object.keys(userProvidedAspects).forEach((key) => {
+          if (userProvidedAspects[key] && userProvidedAspects[key].trim() !== "") {
+            const matchingAspect = data.missingItemSpecifics.find(
+              (a: string) =>
+                a.toLowerCase() === key.toLowerCase() ||
+                a.toLowerCase().includes(key.toLowerCase()) ||
+                key.toLowerCase().includes(a.toLowerCase()),
+            )
+            prefillAspects[matchingAspect || key] = userProvidedAspects[key]
+          }
+        })
+      }
+      const currentDefs = data.aspectDefinitions || aspectDefinitions
+      currentDefs.forEach((def: any) => {
+        if (def.suggestedValue && !prefillAspects[def.name]) {
+          prefillAspects[def.name] = def.suggestedValue
+        }
+      })
+      setUserProvidedAspects(prefillAspects)
+      setShowAspectForm(true)
+      setListingError(null)
+      return true
+    }
+
+    if (data.action === "genre_suggestion") {
+      setGenreSuggestion({
+        rejected: data.genreRejectedValue || MediaGenre,
+        suggestion: data.genreSuggestion || null,
+        allowedValues: data.genreAllowedValues || [],
+      })
+      setGenreInput(data.genreSuggestion || "")
+      setListingError(null)
+      return true
+    }
+
+    // Generic failure: surface the raw eBay error + hint.
+    let errorMessage = "eBay API Error:\n\n"
+    if (data.rawEbayError) {
+      errorMessage += "RAW eBay Response:\n" + JSON.stringify(data.rawEbayError, null, 2) + "\n\n"
+    }
+    errorMessage += "Error: " + (data.error || "Failed to list product on eBay") + "\n"
+    if (data.errorCode) errorMessage += "Error Code: " + data.errorCode + "\n"
+    if (data.hint) errorMessage += "Hint: " + data.hint
+    throw new Error(errorMessage)
+  }
+
+  // After a successful listing, show the next SKU (derived from the returned
+  // one, format PREFIX-0000N) or fall back to refetching it.
+  const advanceSkuPreview = (sku?: string) => {
+    if (sku) {
+      setListedSku(sku)
+      const skuParts = sku.split("-0000")
+      if (skuParts.length === 2) {
+        const currentCounter = parseInt(skuParts[1])
+        if (!isNaN(currentCounter)) {
+          setSkuPreview(`${skuParts[0]}-0000${currentCounter + 1}`)
+          return
+        }
+      }
+    }
+    fetchSkuPreview(false)
+  }
+
   const handleListOnEbay = async (
     additionalAspects?: Record<string, string>,
     bypassFloorWarning?: boolean,
@@ -871,207 +1043,13 @@ export default function ProductSearch() {
     // This preserves aspectDefinitions state for retry attempts
     
     try {
-      // Merge user-provided aspects with existing aspects
-      const currentAspects = productData.localizedAspects || productData.aspects || {}
-      const mergedAspects: Record<string, string[]> = {}
-      
-      // First, copy existing aspects and ensure they're in array format
-      Object.keys(currentAspects).forEach(key => {
-        const value = currentAspects[key]
-        if (value) {
-          if (Array.isArray(value)) {
-            // Filter out empty values
-            const nonEmptyValues = value.filter(v => v && String(v).trim() !== "")
-            if (nonEmptyValues.length > 0) {
-              mergedAspects[key] = nonEmptyValues.map(v => String(v).trim())
-            }
-          } else if (String(value).trim() !== "") {
-            mergedAspects[key] = [String(value).trim()]
-          }
-        }
-      })
-      
-      // Add user-provided aspects (these will overwrite existing ones)
-      // Map user-provided aspect names to exact names from aspectDefinitions if available
-      if (additionalAspects && Object.keys(additionalAspects).length > 0) {
-        console.log("Merging user-provided aspects:", additionalAspects)
-        console.log("Available aspect definitions:", aspectDefinitions.map((a: any) => a.name))
-        
-        Object.keys(additionalAspects).forEach(userKey => {
-          const value = additionalAspects[userKey]
-          if (value && typeof value === 'string' && value.trim() !== "") {
-            // Use the exact aspect name from aspectDefinitions if available
-            // This ensures we match exactly what eBay expects
-            // Try multiple matching strategies to find the correct aspect name
-            let aspectDef = aspectDefinitions.find((a: any) => 
-              a.name && a.name.toLowerCase() === userKey.toLowerCase()
-            )
-            
-            // If not found, try partial matching
-            if (!aspectDef && aspectDefinitions.length > 0) {
-              aspectDef = aspectDefinitions.find((a: any) => 
-                a.name && (
-                  a.name.toLowerCase().includes(userKey.toLowerCase()) ||
-                  userKey.toLowerCase().includes(a.name.toLowerCase())
-                )
-              )
-            }
-            
-            // If still not found, try matching against missingAspects (which contains the exact eBay names)
-            if (!aspectDef && missingAspects.length > 0) {
-              const matchingMissingAspect = missingAspects.find((a: string) => 
-                a.toLowerCase() === userKey.toLowerCase() ||
-                a.toLowerCase().includes(userKey.toLowerCase()) ||
-                userKey.toLowerCase().includes(a.toLowerCase())
-              )
-              if (matchingMissingAspect) {
-                // Use the exact name from missingAspects
-                mergedAspects[matchingMissingAspect] = [value.trim()]
-                console.log(`Mapped aspect "${userKey}" -> "${matchingMissingAspect}" (from missingAspects) with value:`, value.trim())
-                return // Skip the rest of this iteration
-              }
-            }
-            
-            const exactAspectName = aspectDef ? aspectDef.name : userKey
-            
-            // Ensure the value is stored as an array (eBay format)
-            // This overwrites any existing value for this aspect
-            mergedAspects[exactAspectName] = [value.trim()]
-            console.log(`Mapped aspect "${userKey}" -> "${exactAspectName}" with value:`, value.trim())
-          }
-        })
-        
-        console.log("Final merged aspects:", mergedAspects)
-      }
+      const mergedAspects = buildMergedAspects(additionalAspects, genreOverride)
 
-      // Auto-map Media Type -> eBay's required "Format" item specific so
-      // DVD-family (and other) listings publish without prompting for Format.
-      // Skip if the user already supplied a Format value.
-      const formatValue = MEDIA_FORMAT_ASPECT[MediaType]
-      const hasFormat = Object.keys(mergedAspects).some(
-        (k) => k.toLowerCase() === "format" && (mergedAspects[k] || []).length > 0
-      )
-      if (formatValue && !hasFormat) {
-        mergedAspects["Format"] = [formatValue]
-      }
-
-      // Auto-map the title item specific (e.g. "Movie/TV Title") to the listing
-      // title so it publishes without prompting. Skip if already supplied.
-      const titleAspectName = MEDIA_TITLE_ASPECT[MediaType]
-      // eBay caps item-specific values at 65 characters.
-      const titleAspectValue = (editedTitle || productData.title || "").trim().slice(0, 65)
-      if (titleAspectName && titleAspectValue) {
-        const hasTitleAspect = Object.keys(mergedAspects).some(
-          (k) => k.toLowerCase() === titleAspectName.toLowerCase() && (mergedAspects[k] || []).length > 0
-        )
-        if (!hasTitleAspect) {
-          mergedAspects[titleAspectName] = [titleAspectValue]
-        }
-      }
-
-      // Artist (CD/Cassette only) -> eBay's "Artist" item specific.
-      const artistValue = (MediaArtist || "").trim().slice(0, 65)
-      if ((MediaType === "CD" || MediaType === "Cassette") && artistValue) {
-        const hasArtist = Object.keys(mergedAspects).some(
-          (k) => k.toLowerCase() === "artist" && (mergedAspects[k] || []).length > 0
-        )
-        if (!hasArtist) {
-          mergedAspects["Artist"] = [artistValue]
-        }
-      }
-
-      // Map the product-details Genre -> eBay's "Genre" item specific. The
-      // backend validates it against eBay's allowed values. If the user chose to
-      // SKIP it after a "did you mean" prompt, drop it from the mapping.
-      // genreOverride lets the retry use the resolved value without waiting on
-      // React state to update.
-      let effectiveGenre = (MediaGenre || "").trim()
-      let effectiveSkipGenre = skipGenre
-      if (genreOverride?.skip) {
-        effectiveSkipGenre = true
-      } else if (genreOverride?.value !== undefined) {
-        effectiveGenre = genreOverride.value.trim()
-        effectiveSkipGenre = false
-      }
-      const genreValue = effectiveGenre.slice(0, 65)
-      if (genreValue && !effectiveSkipGenre) {
-        const hasGenre = Object.keys(mergedAspects).some(
-          (k) => k.toLowerCase() === "genre" && (mergedAspects[k] || []).length > 0
-        )
-        if (!hasGenre) {
-          mergedAspects["Genre"] = [genreValue]
-        }
-      }
-
-      // Calculate discounted price for listing
-      const listingPrice = editedPrice || productData.price?.value || "0.00"
-      const priceInfo = calculateDiscountedPrice(listingPrice)
+      // Discounted price (the minimum floor was already applied above).
       const finalListingPrice = priceInfo.discounted.toFixed(2)
-      
-      // DEBUG: Log what we're sending for description
-      // When override is enabled: use editedDescription, but fall back to eBay description if empty (to avoid empty listing errors)
-      // When override is disabled: use editedDescription or fall back to product data
-      console.log("[FRONTEND DEBUG] ========== LIST ON EBAY CLICKED ==========")
-      console.log("[FRONTEND DEBUG] Listing - Description state before processing:", JSON.stringify({
-        useOverrideDescription: useOverrideDescription,
-        editedDescription: editedDescription,
-        editedDescriptionLength: editedDescription ? editedDescription.length : 0,
-        editedDescriptionPreview: editedDescription ? editedDescription.substring(0, 100) : "empty",
-        editedDescriptionIsEmpty: !editedDescription || editedDescription.trim().length === 0,
-        productDataShortDescription: productData.shortDescription,
-        productDataDescription: productData.description,
-        productDataDescriptionLength: productData.description ? productData.description.length : 0
-      }, null, 2))
-      
-      // Description logic:
-      // 1. If useOverrideDescription is enabled and universalOverrideDescription is set, use that
-      // 2. If user manually edited the description (editedDescription), use that
-      // 3. Otherwise, fall back to eBay product description
-      let descriptionToSend: string
-      let descriptionSource: string
-      
-      if (useOverrideDescription && universalOverrideDescription && universalOverrideDescription.trim().length > 0) {
-        // Universal override is enabled and has content - use it
-        descriptionToSend = universalOverrideDescription
-        descriptionSource = "UNIVERSAL_OVERRIDE"
-      } else {
-        // Combine the structured Media fields + description into the labeled
-        // HTML block. Falls back to the eBay description if all are empty.
-        descriptionToSend =
-          buildCombinedDescription() ||
-          productData.shortDescription ||
-          productData.description ||
-          ""
-        descriptionSource = "COMBINED_Media_FIELDS"
-      }
-      
-      console.log("[FRONTEND DEBUG] Listing to eBay - Final Description Decision:", JSON.stringify({
-        useOverrideDescription: useOverrideDescription,
-        universalOverrideDescription: universalOverrideDescription,
-        universalOverrideDescriptionLength: universalOverrideDescription ? universalOverrideDescription.length : 0,
-        editedDescription: editedDescription,
-        editedDescriptionLength: editedDescription ? editedDescription.length : 0,
-        productDataShortDescription: productData.shortDescription,
-        productDataDescription: productData.description,
-        descriptionToSend: descriptionToSend,
-        descriptionToSendPreview: descriptionToSend ? descriptionToSend.substring(0, 100) : "empty",
-        descriptionLength: descriptionToSend.length,
-        isEmpty: !descriptionToSend || descriptionToSend.trim().length === 0,
-        descriptionSource: descriptionSource
-      }, null, 2))
-
+      const descriptionToSend = buildListingDescription()
       const conditionDescriptionToSend =
         enableSellerNoteEditing ? universalSellerNoteText : undefined
-
-      console.log("[FRONTEND DEBUG] Listing - Condition Description Decision:", JSON.stringify({
-        enableSellerNoteEditing,
-        isEditing,
-        willSendConditionDescription: conditionDescriptionToSend !== undefined,
-        conditionDescriptionLength: conditionDescriptionToSend ? conditionDescriptionToSend.length : 0,
-        conditionDescriptionPreview: conditionDescriptionToSend
-          ? conditionDescriptionToSend.substring(0, 120)
-          : "default_on_backend",
-      }, null, 2))
 
       const response = await apiRequest("/api/ebay/list", {
         method: "POST",
@@ -1142,134 +1120,16 @@ export default function ProductSearch() {
       let data
       try {
         data = await response.json()
-      } catch (jsonError) {
+      } catch {
         throw new Error(`Failed to parse response: ${response.status} ${response.statusText}`)
       }
       
       if (!response.ok) {
-        // DEBUG: Log error response
-        console.error("[FRONTEND DEBUG] Listing failed with status:", response.status)
-        console.error("[FRONTEND DEBUG] Error response data:", data)
-        console.error("[FRONTEND DEBUG] Error details:", {
-          error: data.error,
-          errorCode: data.errorCode,
-          received: data.received,
-          details: data.details
-        })
-        
-        // Check if this is a missing item specifics error
-        if (data.action === "missing_item_specifics" && data.missingItemSpecifics) {
-          setMissingAspects(data.missingItemSpecifics)
-          // Preserve existing aspectDefinitions if new ones aren't provided, otherwise update
-          if (data.aspectDefinitions && data.aspectDefinitions.length > 0) {
-            setAspectDefinitions(data.aspectDefinitions)
-          } else if (aspectDefinitions.length === 0) {
-            // Only set empty array if we don't have any existing definitions
-            setAspectDefinitions([])
-          }
-          // If we have existing definitions and no new ones, keep the existing ones
-          
-          // Pre-fill form with user's previous input if retrying, otherwise use suggested values
-          const prefillAspects: Record<string, string> = {}
-          
-          // First, preserve user's previous input if this is a retry
-          if (userProvidedAspects && Object.keys(userProvidedAspects).length > 0) {
-            Object.keys(userProvidedAspects).forEach(key => {
-              if (userProvidedAspects[key] && userProvidedAspects[key].trim() !== "") {
-                // Map to correct aspect name from missingAspects or aspectDefinitions
-                const matchingAspect = data.missingItemSpecifics.find((a: string) => 
-                  a.toLowerCase() === key.toLowerCase() ||
-                  a.toLowerCase().includes(key.toLowerCase()) ||
-                  key.toLowerCase().includes(a.toLowerCase())
-                )
-                if (matchingAspect) {
-                  prefillAspects[matchingAspect] = userProvidedAspects[key]
-                } else {
-                  prefillAspects[key] = userProvidedAspects[key]
-                }
-              }
-            })
-          }
-          
-          // Then, fill in suggested values for any missing aspects
-          const currentDefs = data.aspectDefinitions || aspectDefinitions
-          currentDefs.forEach((def: any) => {
-            if (def.suggestedValue && !prefillAspects[def.name]) {
-              prefillAspects[def.name] = def.suggestedValue
-            }
-          })
-          
-          setUserProvidedAspects(prefillAspects)
-          
-          setShowAspectForm(true)
-          setListingError(null) // Clear error to show form instead
-          setListingLoading(false)
-          return // Don't throw error, show form instead
-        }
-
-        // Genre value wasn't in eBay's allowed list -> offer a "did you mean".
-        if (data.action === "genre_suggestion") {
-          setGenreSuggestion({
-            rejected: data.genreRejectedValue || MediaGenre,
-            suggestion: data.genreSuggestion || null,
-            allowedValues: data.genreAllowedValues || [],
-          })
-          setGenreInput(data.genreSuggestion || "")
-          setListingError(null)
-          setListingLoading(false)
-          return
-        }
-
-        // Log the error for debugging
-        console.error("Listing error:", {
-          status: response.status,
-          error: data.error,
-          errorCode: data.errorCode,
-          needsReconnect: data.needsReconnect,
-          details: data.details,
-          rawEbayError: data.rawEbayError
-        })
-        
-        // Display RAW eBay error for debugging
-        let errorMessage = "eBay API Error:\n\n"
-        
-        // Show raw eBay error if available
-        if (data.rawEbayError) {
-          errorMessage += "RAW eBay Response:\n" + JSON.stringify(data.rawEbayError, null, 2) + "\n\n"
-        }
-        
-        // Show our processed error
-        errorMessage += "Error: " + (data.error || "Failed to list product on eBay") + "\n"
-        
-        if (data.errorCode) {
-          errorMessage += "Error Code: " + data.errorCode + "\n"
-        }
-        
-        if (data.hint) {
-          errorMessage += "Hint: " + data.hint
-        }
-        
-        // Add received data for debugging if available
-        if (data.received) {
-          console.error("Received data:", data.received)
-        }
-        if (data.details) {
-          console.error("eBay API Error Details:", JSON.stringify(data.details, null, 2))
-          // Also log individual errors if available
-          if (data.details.errors && Array.isArray(data.details.errors)) {
-            data.details.errors.forEach((err: any, index: number) => {
-              console.error(`Error ${index + 1}:`, {
-                errorId: err.errorId,
-                domain: err.domain,
-                category: err.category,
-                message: err.message,
-                longMessage: err.longMessage,
-                parameters: err.parameters
-              })
-            })
-          }
-        }
-        throw new Error(errorMessage)
+        // Surfaces an inline prompt (missing item specifics / genre) and
+        // returns, or throws a readable error caught below.
+        handleListingErrorResponse(data)
+        setListingLoading(false)
+        return
       }
       
       // Only clear aspect form and definitions on successful listing
@@ -1283,32 +1143,8 @@ export default function ProductSearch() {
       if (CATALOG_TYPES.includes(MediaType)) {
         saveToCatalog().catch(() => {})
       }
-      // Capture the SKU that was used for this listing and calculate next SKU
-      if (data.sku) {
-        setListedSku(data.sku)
-        
-        // Calculate the next SKU based on the returned SKU
-        // Format: PREFIX-0000XXX where XXX is the counter
-        const skuParts = data.sku.split('-0000')
-        if (skuParts.length === 2) {
-          const prefix = skuParts[0]
-          const currentCounter = parseInt(skuParts[1])
-          if (!isNaN(currentCounter)) {
-            const nextCounter = currentCounter + 1
-            const nextSku = `${prefix}-0000${nextCounter}`
-            setSkuPreview(nextSku)
-          } else {
-            // Fallback to fetching from API
-            fetchSkuPreview(false)
-          }
-        } else {
-          // Fallback to fetching from API
-          fetchSkuPreview(false)
-        }
-      } else {
-        // Fallback to fetching from API
-        fetchSkuPreview(false)
-      }
+      // Capture the SKU used for this listing and show the next one.
+      advanceSkuPreview(data.sku)
       // Keep user in edit mode after listing so they can make changes and list again
       // setIsEditing(false) - Removed: users can now type and list directly without saving
     } catch (err: any) {
@@ -1372,7 +1208,6 @@ export default function ProductSearch() {
     setScannerActive(true)
     setError("")
     setScanningStatus("Initializing camera...")
-    setDebugLogs([]) // Clear previous logs
     addDebugLog("✅ Scanner state updated")
   }
 
@@ -2296,33 +2131,18 @@ export default function ProductSearch() {
                               if (!editedCondition || editedCondition.trim() === "") {
                                 setEditedCondition("Used - Very Good")
                               }
-                              // When entering edit mode, initialize editedDescription
-                              // If override is enabled and there's a previously saved description, use it
-                              // Otherwise, use product data description or empty if override is enabled
-                              console.log("[FRONTEND DEBUG] ========== EDIT CLICKED ==========")
-                              console.log("[FRONTEND DEBUG] Edit Clicked - Current state:", JSON.stringify({
-                                useOverrideDescription: useOverrideDescription,
-                                productDataDescription: productData.description,
-                                productDataShortDescription: productData.shortDescription,
-                                currentEditedDescription: editedDescription
-                              }, null, 2))
-                              
+                              // When entering edit mode, initialize editedDescription.
+                              // If override is enabled and there's a previously saved
+                              // description, use it; otherwise use the product data
+                              // description (or empty if override is enabled).
                               if (useOverrideDescription) {
-                                // Check if there's a previously saved description in productData
                                 const savedDescription = productData.description || productData.shortDescription || ""
-                                console.log("[FRONTEND DEBUG] Override enabled - Loading saved description:", JSON.stringify({
-                                  savedDescription: savedDescription,
-                                  savedDescriptionLength: savedDescription.length,
-                                  source: productData.description ? "productData.description" : (productData.shortDescription ? "productData.shortDescription" : "empty")
-                                }, null, 2))
                                 setEditedDescription(savedDescription)
                               } else {
                                 const normalDescription = productData.shortDescription || productData.description || ""
-                                console.log("[FRONTEND DEBUG] Override disabled - Loading normal description:", normalDescription)
                                 setEditedDescription(normalDescription)
                               }
                               setIsEditing(true)
-                              console.log("[FRONTEND DEBUG] Edit mode enabled")
                             }}
                             className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white font-semibold rounded-lg transition-colors duration-200 flex items-center gap-2"
                           >
@@ -2348,14 +2168,7 @@ export default function ProductSearch() {
                         />
                       ) : (
                         <p className="text-gray-900 dark:text-white">
-                          {(() => {
-                            console.log("[Title Display] productData.title:", productData.title)
-                            console.log("[Title Display] bannedKeywords:", bannedKeywords)
-                            console.log("[Title Display] keywordsLoaded:", keywordsLoaded)
-                            const result = productData.title ? removeKeywords(productData.title, bannedKeywords) : "No title"
-                            console.log("[Title Display] Result after removeKeywords:", result)
-                            return result
-                          })()}
+                          {productData.title ? removeKeywords(productData.title, bannedKeywords) : "No title"}
                         </p>
                       )}
                     </div>
