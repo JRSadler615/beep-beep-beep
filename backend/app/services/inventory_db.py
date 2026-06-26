@@ -29,6 +29,7 @@ from app.services.ebay_client import (
     ebay_headers,
     get_valid_ebay_token,
 )
+from app.services.media import CATEGORY_TO_MEDIA_TYPE
 from app.services.upc import normalize_no_zeros
 
 TABLE = "eBay_inventory"
@@ -289,7 +290,12 @@ async def enrich_from_offers() -> dict:
                 continue
             free_map = await _free_shipping_by_policy(client, token)
             skus = (
-                supabase.table(TABLE).select("SKU").eq("user_id", uid).execute().data or []
+                supabase.table(TABLE)
+                .select("SKU,Type")
+                .eq("user_id", uid)
+                .execute()
+                .data
+                or []
             )
             for r in skus:
                 sku = r["SKU"]
@@ -304,7 +310,15 @@ async def enrich_from_offers() -> dict:
                     except (TypeError, ValueError):
                         pass
                 if offer.get("categoryId"):
-                    update["Category_id"] = str(offer["categoryId"])
+                    category_id = str(offer["categoryId"])
+                    update["Category_id"] = category_id
+                    # Derive the media type from the category, but only fill Type
+                    # when it's blank (don't clobber a specific type — e.g.
+                    # Blu-ray — that we set when listing). Leave null if no match.
+                    if not r.get("Type"):
+                        media_type = CATEGORY_TO_MEDIA_TYPE.get(category_id)
+                        if media_type:
+                            update["Type"] = media_type
                 listing_id = (offer.get("listing") or {}).get("listingId")
                 if listing_id:
                     update["Listing_id"] = str(listing_id)

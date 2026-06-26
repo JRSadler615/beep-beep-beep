@@ -18,6 +18,17 @@ MEDIA_CATEGORY_IDS: dict[str, str] = {
     "VHS": "309",
 }
 
+# eBay category id -> a representative media type (reverse of MEDIA_CATEGORY_IDS).
+# Used to derive the inventory `Type` column from a category we discovered via
+# eBay. 617 is shared by DVD/Blu-ray/4k DVD, so it maps to the family default
+# "DVD" (the specific format is preserved when WE list the item).
+CATEGORY_TO_MEDIA_TYPE: dict[str, str] = {
+    "617": "DVD",
+    "176984": "CD",
+    "176983": "Cassette",
+    "309": "VHS",
+}
+
 # Allowed media categories (leaves + the Movies & TV / Music parents). eBay
 # Browse allows only ONE category_id per search (error 12030), so each search is
 # scoped to the single category matching the selected media type.
