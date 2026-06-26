@@ -134,6 +134,31 @@ create table if not exists public.ebay_inventory_location (
   updated_at            timestamptz not null default now()
 );
 
+-- eBay_inventory --------------------------------------------------------------
+-- Global (single-seller) mirror of the eBay inventory, kept current by the
+-- backend startup sync and by listing/increase actions. Speeds up the
+-- product-search duplicate check (a local UPC lookup instead of paging the eBay
+-- Inventory API). Mixed-case names match the table as created in Supabase.
+create table if not exists public."eBay_inventory" (
+  "UPC"           numeric not null,
+  "Type"          text,
+  "SKU"           text primary key,
+  "Inventory"     numeric,
+  "Current_price" numeric,
+  "Free_shipping" boolean,
+  "Title"         text
+);
+create index if not exists ebay_inventory_upc_idx on public."eBay_inventory" ("UPC");
+
+-- inventory_sync_state --------------------------------------------------------
+-- Single-row table holding the last eBay_inventory sync time, used to throttle
+-- the startup sync (so the dev --reload loop doesn't re-sync on every restart).
+create table if not exists public.inventory_sync_state (
+  id             integer primary key default 1,
+  last_synced_at timestamptz,
+  constraint inventory_sync_state_singleton check (id = 1)
+);
+
 -- media_type_dimension_defaults -----------------------------------------------
 -- Per-media-type default package dimensions/weight, used to pre-fill the listing
 -- form when the catalog has no value for an item. One row per (user, media_type).

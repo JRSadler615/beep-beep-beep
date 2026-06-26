@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     EBAY_MARKETPLACE_ID: str = "EBAY_US"
     EBAY_DEBUG: bool = False
 
+    # Local eBay-inventory mirror: minimum minutes between startup syncs (the
+    # dev --reload loop restarts often, so we throttle to avoid hammering eBay).
+    INVENTORY_SYNC_MIN_INTERVAL_MINUTES: int = 10
+
     # Observability
     SENTRY_DSN: str = ""
 

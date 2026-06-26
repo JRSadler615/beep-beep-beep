@@ -27,10 +27,14 @@ from app.services.ebay_client import (
     get_valid_ebay_token,
 )
 from app.services.inventory import increase_inventory as _increase_inventory
+from app.services.inventory_db import (
+    find_duplicates_by_upc,
+    record_listing,
+    set_quantity,
+)
 from app.services.listing import create_listing as _create_listing
 from app.services.media import media_config
 from app.services.search import search_product as _search_product
-from app.services.upc import digits_only, normalize_no_zeros
 
 router = APIRouter(prefix="/api/ebay", tags=["ebay"])
 
@@ -221,93 +225,17 @@ async def search(
 
 
 @router.get("/check-duplicate")
-async def check_duplicate(upc: str = Query(...), user_id: str = Depends(get_user_id)):
-    """Scan the seller's inventory items for a matching UPC/EAN/ISBN/GTIN.
-    Spec: app/api/ebay/check-duplicate/route.ts. Returns a soft error payload
+def check_duplicate(upc: str = Query(...), user_id: str = Depends(get_user_id)):
+    """Look up duplicates in the local `eBay_inventory` mirror, matched by UPC.
+
+    This replaces the old per-search pagination of the eBay Inventory API: the
+    mirror is kept current by the startup sync and by listing/increase actions,
+    so duplicate detection is now a single fast query. Returns a soft payload
     (never 4xx) so the SPA's duplicate banner degrades gracefully."""
     try:
-        access_token = await get_valid_ebay_token(user_id)
-    except EbayTokenError as e:
-        return {"hasDuplicates": False, "duplicates": [], "upc": upc, "error": e.message}
-
-    original = upc.strip()
-    search = digits_only(original)
-    search_no_zeros = normalize_no_zeros(original)
-
-    def value_matches(value: object) -> bool:
-        if not value:
-            return False
-        if isinstance(value, list):
-            return any(value_matches(v) for v in value)
-        s = str(value).strip()
-        return (
-            s == original
-            or digits_only(s) == search
-            or normalize_no_zeros(s) == search_no_zeros
-        )
-
-    def check_item(item: dict) -> dict | None:
-        product = item.get("product")
-        if not product:
-            return None
-        title = product.get("title", "Unknown product")
-        for field in ("upc", "ean", "isbn", "gtin"):
-            if value_matches(product.get(field)):
-                return {"sku": item.get("sku"), "title": title}
-        for ident in product.get("productIdentifiers", []) or []:
-            if ident.get("type") in ("UPC", "UPC_A", "UPC_E", "GTIN", "EAN", "ISBN"):
-                if value_matches(ident.get("value") or ident.get("identifier")):
-                    return {"sku": item.get("sku"), "title": title}
-        return None
-
-    MAX_DUP = 10
-    MAX_PAGES = 30
-    base = settings.ebay_base_url
-    duplicates: list[dict] = []
-
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{base}/sell/inventory/v1/inventory_item?limit=200&offset=0",
-                headers=ebay_headers(access_token),
-            )
-            if resp.status_code >= 400:
-                return {
-                    "hasDuplicates": False,
-                    "duplicates": [],
-                    "upc": upc,
-                    "error": f"Failed to fetch inventory: {resp.status_code}",
-                }
-            data = resp.json()
-            items = data.get("inventoryItems", []) or []
-            nxt = data.get("next")
-            pages = 1
-
-            while True:
-                for item in items:
-                    match = check_item(item)
-                    if match and match["sku"]:
-                        duplicates.append(match)
-                        if len(duplicates) >= MAX_DUP:
-                            break
-                if len(duplicates) >= MAX_DUP or not nxt or pages >= MAX_PAGES:
-                    break
-
-                next_url = nxt
-                if nxt.startswith("/"):
-                    next_url = f"{base}{nxt}"
-                elif not nxt.startswith("http"):
-                    next_url = f"{base}/{nxt}"
-                resp = await client.get(next_url, headers=ebay_headers(access_token))
-                if resp.status_code >= 400:
-                    break
-                data = resp.json()
-                items = data.get("inventoryItems", []) or []
-                nxt = data.get("next")
-                pages += 1
-    except Exception as e:  # noqa: BLE001 - match the original's soft-fail
-        return {"hasDuplicates": False, "duplicates": [], "error": str(e)}
-
+        duplicates = find_duplicates_by_upc(upc)
+    except Exception as e:  # noqa: BLE001 - soft-fail like the original
+        return {"hasDuplicates": False, "duplicates": [], "upc": upc, "error": str(e)}
     return {"hasDuplicates": len(duplicates) > 0, "duplicates": duplicates, "upc": upc}
 
 
@@ -456,6 +384,18 @@ async def list_item(request: Request, user_id: str = Depends(get_user_id)):
     except Exception:
         return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
     status_code, payload = await _create_listing(user_id, body)
+    # Non-duplicate listing succeeded -> add it to the local mirror at quantity 1.
+    if status_code == 200 and isinstance(payload, dict) and payload.get("sku"):
+        try:
+            record_listing(
+                payload.get("sku"),
+                body.get("upc"),
+                title=body.get("title"),
+                media_type=body.get("mediaType"),
+                price=body.get("price"),
+            )
+        except Exception as e:  # noqa: BLE001 - mirror write must not fail the listing
+            print("[inventory-db] record_listing failed:", e)
     return JSONResponse(status_code=status_code, content=payload)
 
 
@@ -468,4 +408,10 @@ async def increase_inventory(request: Request, user_id: str = Depends(get_user_i
     status_code, payload = await _increase_inventory(
         user_id, body.get("sku"), body.get("upc")
     )
+    # Mirror eBay's new quantity into the local table for this SKU.
+    if status_code == 200 and isinstance(payload, dict) and payload.get("success"):
+        try:
+            set_quantity(body.get("sku"), payload.get("newQuantity"), upc=body.get("upc"))
+        except Exception as e:  # noqa: BLE001 - mirror write must not fail the increase
+            print("[inventory-db] set_quantity failed:", e)
     return JSONResponse(status_code=status_code, content=payload)

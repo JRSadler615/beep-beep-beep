@@ -36,6 +36,17 @@ app.include_router(settings_router.router)
 app.include_router(catalog.router)
 
 
+@app.on_event("startup")
+async def _sync_inventory_on_startup():
+    """Refresh the local eBay_inventory mirror in the background on startup
+    (throttled). Scheduled as a task so it never delays server readiness."""
+    import asyncio
+
+    from app.services.inventory_db import maybe_sync_on_startup
+
+    asyncio.create_task(maybe_sync_on_startup())
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
