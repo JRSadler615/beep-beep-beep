@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Local eBay-inventory mirror: minimum minutes between startup syncs (the
     # dev --reload loop restarts often, so we throttle to avoid hammering eBay).
     INVENTORY_SYNC_MIN_INTERVAL_MINUTES: int = 10
+    # The "enrich from offers" pass (price/category/listing/free-shipping) is far
+    # heavier (one offer call per SKU), so it runs at most once per this window.
+    INVENTORY_ENRICH_MIN_INTERVAL_HOURS: int = 24
 
     # Observability
     SENTRY_DSN: str = ""

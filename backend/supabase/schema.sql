@@ -139,6 +139,9 @@ create table if not exists public.ebay_inventory_location (
 -- backend startup sync and by listing/increase actions. Speeds up the
 -- product-search duplicate check (a local UPC lookup instead of paging the eBay
 -- Inventory API). Mixed-case names match the table as created in Supabase.
+-- SKU/UPC/Title/Inventory/user_id come from the inventory sync; Current_price/
+-- Category_id/Listing_id/Free_shipping come from the daily "enrich from offers"
+-- pass (those live on the eBay Offer, not the inventory item).
 create table if not exists public."eBay_inventory" (
   "UPC"           numeric not null,
   "Type"          text,
@@ -146,16 +149,20 @@ create table if not exists public."eBay_inventory" (
   "Inventory"     numeric,
   "Current_price" numeric,
   "Free_shipping" boolean,
-  "Title"         text
+  "Title"         text,
+  user_id         uuid,
+  "Listing_id"    text,
+  "Category_id"   text
 );
 create index if not exists ebay_inventory_upc_idx on public."eBay_inventory" ("UPC");
 
 -- inventory_sync_state --------------------------------------------------------
--- Single-row table holding the last eBay_inventory sync time, used to throttle
--- the startup sync (so the dev --reload loop doesn't re-sync on every restart).
+-- Single-row table holding the last inventory sync + last enrichment times,
+-- used to throttle the startup sync (10 min) and the daily offer enrichment.
 create table if not exists public.inventory_sync_state (
-  id             integer primary key default 1,
-  last_synced_at timestamptz,
+  id               integer primary key default 1,
+  last_synced_at   timestamptz,
+  last_enriched_at timestamptz,
   constraint inventory_sync_state_singleton check (id = 1)
 );
 

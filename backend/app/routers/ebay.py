@@ -393,6 +393,9 @@ async def list_item(request: Request, user_id: str = Depends(get_user_id)):
                 title=body.get("title"),
                 media_type=body.get("mediaType"),
                 price=body.get("price"),
+                user_id=user_id,
+                category_id=body.get("categoryId"),
+                listing_id=payload.get("listingId"),
             )
         except Exception as e:  # noqa: BLE001 - mirror write must not fail the listing
             print("[inventory-db] record_listing failed:", e)
@@ -411,7 +414,9 @@ async def increase_inventory(request: Request, user_id: str = Depends(get_user_i
     # Mirror eBay's new quantity into the local table for this SKU.
     if status_code == 200 and isinstance(payload, dict) and payload.get("success"):
         try:
-            set_quantity(body.get("sku"), payload.get("newQuantity"), upc=body.get("upc"))
+            set_quantity(
+                body.get("sku"), payload.get("newQuantity"), upc=body.get("upc"), user_id=user_id
+            )
         except Exception as e:  # noqa: BLE001 - mirror write must not fail the increase
             print("[inventory-db] set_quantity failed:", e)
     return JSONResponse(status_code=status_code, content=payload)
