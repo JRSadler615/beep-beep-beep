@@ -27,6 +27,10 @@ from app.services.ebay_client import (
     get_valid_ebay_token,
 )
 from app.services.inventory import increase_inventory as _increase_inventory
+from app.services.all_item_catalog import (
+    append_inventory_increase,
+    append_new_listing,
+)
 from app.services.inventory_db import (
     find_duplicates_by_upc,
     record_listing,
@@ -399,6 +403,16 @@ async def list_item(request: Request, user_id: str = Depends(get_user_id)):
             )
         except Exception as e:  # noqa: BLE001 - mirror write must not fail the listing
             print("[inventory-db] record_listing failed:", e)
+        try:
+            append_new_listing(
+                payload.get("sku"),
+                body.get("upc"),
+                body.get("title"),
+                body.get("mediaType"),
+                body.get("price"),
+            )
+        except Exception as e:  # noqa: BLE001 - history write must not fail the listing
+            print("[all-item-catalog] append_new_listing failed:", e)
     return JSONResponse(status_code=status_code, content=payload)
 
 
@@ -419,4 +433,8 @@ async def increase_inventory(request: Request, user_id: str = Depends(get_user_i
             )
         except Exception as e:  # noqa: BLE001 - mirror write must not fail the increase
             print("[inventory-db] set_quantity failed:", e)
+        try:
+            append_inventory_increase(body.get("sku"), body.get("upc"))
+        except Exception as e:  # noqa: BLE001 - history write must not fail the increase
+            print("[all-item-catalog] append_inventory_increase failed:", e)
     return JSONResponse(status_code=status_code, content=payload)

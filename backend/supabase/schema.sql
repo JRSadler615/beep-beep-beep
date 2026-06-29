@@ -134,6 +134,37 @@ create table if not exists public.ebay_inventory_location (
   updated_at            timestamptz not null default now()
 );
 
+-- all_item_catalog ------------------------------------------------------------
+-- Append-only per-item analytics history: one row for every physical item ever
+-- listed or added to inventory (a listing of qty 2 => 2 rows). Permanent (unlike
+-- the eBay_inventory mirror). Sales are assigned FIFO by Listing_date. Mixed-case
+-- names match the table as created in Supabase.
+create table if not exists public.all_item_catalog (
+  "Unique_item_ID"             uuid primary key default gen_random_uuid(),
+  "SKU"                        text,
+  "UPC"                        numeric not null,
+  "Title"                      text,
+  "Type"                       text,
+  "Year"                       text,
+  "Genres"                     text,
+  "Rated"                      text,
+  "Artist"                     text,
+  "Listing_date"               timestamptz,
+  "Status"                     text,
+  "Initial_price"              numeric,
+  "Price_change_since_listing" numeric,
+  "Times_price_changed"        numeric,
+  "Sale_date"                  timestamptz,
+  "Sale_price"                 numeric,
+  "Time_listed"                numeric,
+  "Last_update"                timestamptz,
+  "Free_shipping"              boolean default false,
+  "Duplicate_when_listed"      boolean default false
+);
+create index if not exists all_item_catalog_unsold_idx
+  on public.all_item_catalog ("SKU", "Listing_date") where "Sale_date" is null;
+create index if not exists all_item_catalog_upc_idx on public.all_item_catalog ("UPC");
+
 -- eBay_inventory --------------------------------------------------------------
 -- Global (single-seller) mirror of the eBay inventory, kept current by the
 -- backend startup sync and by listing/increase actions. Speeds up the
