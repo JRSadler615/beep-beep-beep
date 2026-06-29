@@ -38,13 +38,16 @@ app.include_router(catalog.router)
 
 @app.on_event("startup")
 async def _sync_inventory_on_startup():
-    """Refresh the local eBay_inventory mirror in the background on startup
-    (throttled). Scheduled as a task so it never delays server readiness."""
+    """On startup, in the background (so server readiness isn't delayed, and each
+    throttled independently): refresh the eBay_inventory mirror + offer
+    enrichment, and poll orders to record sales into all_item_catalog."""
     import asyncio
 
+    from app.services.all_item_catalog import maybe_sync_sales
     from app.services.inventory_db import maybe_sync_on_startup
 
     asyncio.create_task(maybe_sync_on_startup())
+    asyncio.create_task(maybe_sync_sales())
 
 
 @app.get("/health")

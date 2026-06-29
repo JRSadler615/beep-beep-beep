@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # The "enrich from offers" pass (price/category/listing/free-shipping) is far
     # heavier (one offer call per SKU), so it runs at most once per this window.
     INVENTORY_ENRICH_MIN_INTERVAL_HOURS: int = 24
+    # Sales detection (Fulfillment/Orders API -> all_item_catalog FIFO): poll at
+    # most this often, and look back this many days for orders on each poll
+    # (idempotent — already-recorded order line items are skipped).
+    ORDERS_SYNC_MIN_INTERVAL_MINUTES: int = 60
+    ORDERS_SYNC_LOOKBACK_DAYS: int = 90
 
     # Observability
     SENTRY_DSN: str = ""

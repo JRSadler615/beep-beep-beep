@@ -14,10 +14,18 @@ Initial_price, Price_change_since_listing, Times_price_changed, Sale_date,
 Sale_price, Time_listed, Last_update, Free_shipping, Duplicate_when_listed.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
+import httpx
+
+from app.config import settings
 from app.db import supabase
 from app.services.catalog import lookup_catalog_by_upc
+from app.services.ebay_client import (
+    EbayTokenError,
+    ebay_headers,
+    get_valid_ebay_token,
+)
 from app.services.upc import normalize_no_zeros
 
 TABLE = "all_item_catalog"
@@ -186,3 +194,138 @@ def _days_between(listing_date: object, sale_dt: datetime | None) -> float | Non
     if not listed or not sale_dt:
         return None
     return round((sale_dt - listed).total_seconds() / 86400, 4)
+
+
+# ---------------------------------------------------------------------------
+# Sale detection — eBay Fulfillment/Orders API
+# ---------------------------------------------------------------------------
+#
+# Reads real orders (exact SKU, quantity, sale date, sale price) and assigns
+# them FIFO. Idempotent: each order line item is recorded once (tracked in
+# processed_sale_lineitems), so overlapping poll windows never double-count.
+# Requires the sell.fulfillment(.readonly) scope — reconnect eBay if newly added.
+
+_STATE_TABLE = "inventory_sync_state"
+_PROCESSED_TABLE = "processed_sale_lineitems"
+
+
+async def _fetch_orders(client: httpx.AsyncClient, token: str, start_iso: str) -> list[dict]:
+    """Page through orders created since `start_iso`."""
+    base = settings.ebay_base_url
+    orders: list[dict] = []
+    offset, limit = 0, 200
+    while True:
+        r = await client.get(
+            f"{base}/sell/fulfillment/v1/order",
+            headers=ebay_headers(token),
+            params={
+                "filter": f"creationdate:[{start_iso}..]",
+                "limit": str(limit),
+                "offset": str(offset),
+            },
+        )
+        if r.status_code >= 400:
+            break
+        data = r.json()
+        batch = data.get("orders") or []
+        orders.extend(batch)
+        total = data.get("total") or 0
+        offset += limit
+        if not batch or offset >= total:
+            break
+    return orders
+
+
+def _already_processed(line_item_ids: list[str]) -> set[str]:
+    seen: set[str] = set()
+    for i in range(0, len(line_item_ids), 100):
+        chunk = line_item_ids[i : i + 100]
+        rows = (
+            supabase.table(_PROCESSED_TABLE)
+            .select("line_item_id")
+            .in_("line_item_id", chunk)
+            .execute()
+            .data
+            or []
+        )
+        seen.update(r["line_item_id"] for r in rows)
+    return seen
+
+
+async def sync_sales_from_orders() -> dict:
+    """Pull recent eBay orders and FIFO-assign each unseen line item as a sale.
+    Returns {orders, items_sold}."""
+    accounts = supabase.table("ebay_tokens").select("user_id").execute().data or []
+    start_iso = (
+        datetime.now(timezone.utc) - timedelta(days=settings.ORDERS_SYNC_LOOKBACK_DAYS)
+    ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    order_count = items_sold = 0
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for acct in accounts:
+            try:
+                token = await get_valid_ebay_token(acct["user_id"])
+            except EbayTokenError:
+                continue
+            orders = await _fetch_orders(client, token, start_iso)
+            order_count += len(orders)
+
+            line_items: list[tuple] = []
+            for o in orders:
+                cdate = o.get("creationDate")
+                for li in o.get("lineItems") or []:
+                    lid, sku = li.get("lineItemId"), li.get("sku")
+                    if lid and sku:
+                        line_items.append((lid, o.get("orderId"), sku, cdate, li))
+            if not line_items:
+                continue
+
+            seen = _already_processed([li[0] for li in line_items])
+            for lid, oid, sku, cdate, li in line_items:
+                if lid in seen:
+                    continue
+                qty = li.get("quantity") if isinstance(li.get("quantity"), int) else 1
+                price = (li.get("lineItemCost") or {}).get("value")  # per-unit sale price
+                items_sold += record_sale_fifo(sku, cdate, sale_price=price, count=qty)
+                supabase.table(_PROCESSED_TABLE).insert(
+                    {"line_item_id": lid, "order_id": oid, "sku": sku}
+                ).execute()
+
+    _mark_orders_checked()
+    return {"orders": order_count, "items_sold": items_sold}
+
+
+def _mark_orders_checked() -> None:
+    supabase.table(_STATE_TABLE).upsert(
+        {"id": 1, "last_orders_checked_at": _now_iso()}
+    ).execute()
+
+
+def _orders_checked_at() -> datetime | None:
+    rows = (
+        supabase.table(_STATE_TABLE)
+        .select("last_orders_checked_at")
+        .eq("id", 1)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows or not rows[0].get("last_orders_checked_at"):
+        return None
+    return _parse_ts(rows[0]["last_orders_checked_at"])
+
+
+async def maybe_sync_sales() -> None:
+    """Poll orders on startup unless polled within the configured interval.
+    Swallows errors — must never block the server. Note: returns nothing useful
+    until the eBay account is reconnected with the sell.fulfillment scope."""
+    try:
+        interval = timedelta(minutes=settings.ORDERS_SYNC_MIN_INTERVAL_MINUTES)
+        last = _orders_checked_at()
+        if last and datetime.now(timezone.utc) - last < interval:
+            print("[sales-sync] throttled (last checked", last.isoformat(), ")")
+            return
+        print("[sales-sync] done:", await sync_sales_from_orders())
+    except Exception as e:  # noqa: BLE001
+        print("[sales-sync] skipped:", e)

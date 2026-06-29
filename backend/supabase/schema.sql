@@ -191,10 +191,22 @@ create index if not exists ebay_inventory_upc_idx on public."eBay_inventory" ("U
 -- Single-row table holding the last inventory sync + last enrichment times,
 -- used to throttle the startup sync (10 min) and the daily offer enrichment.
 create table if not exists public.inventory_sync_state (
-  id               integer primary key default 1,
-  last_synced_at   timestamptz,
-  last_enriched_at timestamptz,
+  id                     integer primary key default 1,
+  last_synced_at         timestamptz,
+  last_enriched_at       timestamptz,
+  last_orders_checked_at timestamptz,
   constraint inventory_sync_state_singleton check (id = 1)
+);
+
+-- processed_sale_lineitems ----------------------------------------------------
+-- Exactly-once guard for sales detection: every eBay order line item already
+-- recorded as a sale in all_item_catalog, so overlapping order polls never
+-- double-count.
+create table if not exists public.processed_sale_lineitems (
+  line_item_id text primary key,
+  order_id     text,
+  sku          text,
+  recorded_at  timestamptz not null default now()
 );
 
 -- media_type_dimension_defaults -----------------------------------------------
