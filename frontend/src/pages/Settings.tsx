@@ -117,6 +117,9 @@ export default function Settings() {
   const [loadingMediaDefaults, setLoadingMediaDefaults] = useState(false)
   const [savingMediaType, setSavingMediaType] = useState<string | null>(null)
 
+  // Manual sales resync (eBay Orders API -> all_item_catalog)
+  const [syncingSales, setSyncingSales] = useState(false)
+
   // ---- Shared load/save helpers -------------------------------------------
   // Every settings card repeated the same GET-then-apply and POST-then-toast
   // boilerplate; these collapse that into one place. `begin`/`end` toggle the
@@ -633,6 +636,32 @@ export default function Settings() {
     )
   }
 
+  const handleSyncSales = async () => {
+    setSyncingSales(true)
+    setMessage(null)
+    try {
+      const res = await apiRequest("/api/ebay/sync-sales", { method: "POST" })
+      const data = await res.json()
+      if (res.ok && data.success) {
+        setMessage({
+          type: "success",
+          text: `✓ Sales synced — ${data.orders ?? 0} orders checked, ${data.items_sold ?? 0} item(s) recorded as sold`,
+        })
+      } else {
+        setMessage({
+          type: "error",
+          text:
+            (data.error || "Failed to sync sales") +
+            " — make sure your eBay account is reconnected with the latest permissions.",
+        })
+      }
+    } catch (error) {
+      setMessage({ type: "error", text: "Failed to sync sales" })
+    } finally {
+      setSyncingSales(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -1058,6 +1087,25 @@ export default function Settings() {
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Sales Sync Card */}
+          <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 mt-6">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+              Sync Sales
+            </h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-6">
+              Pull recent eBay orders now and record sales into the item history (used for
+              repricing and sell-through analytics). This also runs automatically on a schedule.
+              If it errors, reconnect your eBay account so it includes order-read permission.
+            </p>
+            <button
+              onClick={handleSyncSales}
+              disabled={syncingSales}
+              className="px-6 py-2 bg-gray-800 dark:bg-gray-700 text-white rounded-md hover:bg-gray-700 dark:hover:bg-gray-600 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {syncingSales ? "Syncing..." : "Sync Sales Now"}
+            </button>
           </div>
 
           {/* Media Type Default Dimensions Card */}

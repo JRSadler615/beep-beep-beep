@@ -30,6 +30,7 @@ from app.services.inventory import increase_inventory as _increase_inventory
 from app.services.all_item_catalog import (
     append_inventory_increase,
     append_new_listing,
+    sync_sales_from_orders,
 )
 from app.services.inventory_db import (
     find_duplicates_by_upc,
@@ -438,3 +439,16 @@ async def increase_inventory(request: Request, user_id: str = Depends(get_user_i
         except Exception as e:  # noqa: BLE001 - history write must not fail the increase
             print("[all-item-catalog] append_inventory_increase failed:", e)
     return JSONResponse(status_code=status_code, content=payload)
+
+
+@router.post("/sync-sales")
+async def sync_sales(user_id: str = Depends(get_user_id)):
+    """Manually pull recent eBay orders and FIFO-record sales into
+    all_item_catalog right now (bypasses the startup throttle). Idempotent —
+    already-recorded order line items are skipped. Requires the eBay account to
+    be connected with the sell.fulfillment scope."""
+    try:
+        result = await sync_sales_from_orders()
+        return {"success": True, **result}
+    except Exception as e:  # noqa: BLE001 - surface a soft error to the SPA
+        return JSONResponse(status_code=502, content={"success": False, "error": str(e)})
